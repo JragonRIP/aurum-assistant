@@ -20,6 +20,7 @@ import {
   normalizePath,
   sanitizeFileName,
 } from "./security";
+import { capabilityBrokerExecute } from "./windows-capability-broker";
 import { windowsSystemExecute } from "./windows-system";
 
 const execFileAsync = promisify(execFile);
@@ -152,6 +153,10 @@ async function runTool(
     case "delete_folder":
       return deleteFolder(String(payload.path ?? ""), roots);
     default: {
+      const broker = await capabilityBrokerExecute(tool, payload, {
+        approvedRoots: roots,
+      });
+      if (broker) return broker;
       const system = await windowsSystemExecute(tool, payload);
       if (system) return system;
       return {

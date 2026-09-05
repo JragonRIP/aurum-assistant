@@ -10,6 +10,7 @@ import {
 } from "./definitions";
 import { registerDesktopTools } from "./desktop-tools";
 import { registerSpotifyTools } from "./spotify-tools";
+import { registerWindowsCapabilityTools } from "./windows-capability-tools";
 import { registerWindowsSystemTools } from "./windows-system-tools";
 
 /** Production registry — cloud + desktop + connected-app tools */
@@ -24,6 +25,7 @@ export function createDefaultRegistry(): ToolRegistry {
   registry.register(createSearchNotesTool());
   registerDesktopTools(registry);
   registerWindowsSystemTools(registry);
+  registerWindowsCapabilityTools(registry);
   registerSpotifyTools(registry);
   return registry;
 }
@@ -31,5 +33,6 @@ export function createDefaultRegistry(): ToolRegistry {
 export { createGetCurrentTimeTool } from "./definitions";
 export { registerDesktopTools } from "./desktop-tools";
 export { registerWindowsSystemTools } from "./windows-system-tools";
+export { registerWindowsCapabilityTools } from "./windows-capability-tools";
 export { registerSpotifyTools } from "./spotify-tools";
 export { clampVolumePercent, applyRelativeVolume } from "./volume";

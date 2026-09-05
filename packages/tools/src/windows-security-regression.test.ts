@@ -57,4 +57,11 @@ describe("Windows / tool registry security regression", () => {
     assert.equal(r.get("restart_pc")?.permission, "CONFIRM");
     assert.equal(r.get("shutdown_pc")?.permission, "CONFIRM");
   });
+
+  it("forbids eval/run_executable style tool ids", () => {
+    const r = createDefaultRegistry();
+    for (const id of ["eval", "run_executable", "execute_command", "run_script"]) {
+      assert.equal(r.get(id), undefined);
+    }
+  });
 });

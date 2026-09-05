@@ -59,6 +59,7 @@ export {
 } from "./device-security";
 export { registerDesktopTools } from "./desktop-tools";
 export { registerWindowsSystemTools } from "./windows-system-tools";
+export { registerWindowsCapabilityTools } from "./windows-capability-tools";
 export { clampVolumePercent, applyRelativeVolume } from "./volume";
 export {
   registerSpotifyTools,

@@ -16,6 +16,7 @@ import {
 } from "./windows-audio";
 import {
   rememberAudioDevice,
+  rememberMonitor,
   rememberWindow,
   resolveAudioDevice,
   resolveWindow,
@@ -24,6 +25,7 @@ import type { DeviceToolResult } from "./windows-tools";
 import {
   enumerateOpenWindows,
   getNativePowerStatus,
+  isWindow,
   postCloseWindow,
   setForegroundWindow,
   setWindowPos,
@@ -293,8 +295,10 @@ function getOpenWindows(): DeviceToolResult {
       hwnd: w.hwnd,
       title: w.title,
       processName: `pid:${w.processId}`,
+      processId: w.processId,
     });
     windows.push({
+      windowReference: referenceId,
       referenceId,
       title: w.title,
       processName: `pid:${w.processId}`,
@@ -321,10 +325,13 @@ function windowAction(
     };
   }
   const hwnd = Math.trunc(win.hwnd);
-  if (!Number.isFinite(hwnd) || hwnd <= 0) {
+  if (!Number.isFinite(hwnd) || hwnd <= 0 || !isWindow(hwnd)) {
     return {
       success: false,
-      error: { code: "VALIDATION_ERROR", message: "Invalid window handle." },
+      error: {
+        code: "WINDOW_NOT_FOUND",
+        message: "Invalid or expired window reference. List windows again.",
+      },
     };
   }
 
@@ -404,15 +411,36 @@ function getDisplayInfo(): DeviceToolResult {
     // Electron main process screen API — SAFE NODE/ELECTRON API
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { screen } = require("electron") as typeof import("electron");
-    const displays = screen.getAllDisplays().map((d, i) => ({
-      name: d.label || `Display ${i + 1}`,
-      width: d.size.width,
-      height: d.size.height,
-      primary: d.id === screen.getPrimaryDisplay().id,
-    }));
+    const primary = screen.getPrimaryDisplay();
+    const displays = screen.getAllDisplays().map((d, i) => {
+      const monitorReference = rememberMonitor({
+        displayId: d.id,
+        index: i,
+        label: d.label || `Display ${i + 1}`,
+        bounds: {
+          x: d.bounds.x,
+          y: d.bounds.y,
+          width: d.bounds.width,
+          height: d.bounds.height,
+        },
+        scaleFactor: d.scaleFactor,
+        primary: d.id === primary.id,
+      });
+      return {
+        monitorReference,
+        name: d.label || `Display ${i + 1}`,
+        index: i + 1,
+        width: d.size.width,
+        height: d.size.height,
+        scaleFactor: d.scaleFactor,
+        refreshRate: d.displayFrequency ?? null,
+        primary: d.id === primary.id,
+        bounds: d.bounds,
+      };
+    });
     return {
       success: true,
-      data: { displays, activityLabel: "Checked displays" },
+      data: { displays, monitors: displays, activityLabel: "Checked displays" },
     };
   } catch {
     return unsupported("Could not read display information.");
@@ -432,6 +460,7 @@ function getPowerStatus(): DeviceToolResult {
 }
 
 function getSystemInfo(): DeviceToolResult {
+  const cpus = os.cpus() ?? [];
   return {
     success: true,
     data: {
@@ -439,8 +468,11 @@ function getSystemInfo(): DeviceToolResult {
       platform: os.platform(),
       release: os.release(),
       arch: os.arch(),
-      cpus: os.cpus()?.[0]?.model ?? null,
+      cpus: cpus[0]?.model ?? null,
+      cpuCount: cpus.length,
       totalMemGb: Math.round((os.totalmem() / 1e9) * 10) / 10,
+      freeMemGb: Math.round((os.freemem() / 1e9) * 10) / 10,
+      uptimeSeconds: Math.round(os.uptime()),
       activityLabel: "Checked system",
     },
   };
@@ -448,11 +480,21 @@ function getSystemInfo(): DeviceToolResult {
 
 function getNetworkStatus(): DeviceToolResult {
   const ifaces = os.networkInterfaces();
-  const adapters: Array<{ name: string; speed: string | null }> = [];
+  const adapters: Array<{
+    name: string;
+    addresses: string[];
+    family: string;
+  }> = [];
   for (const [name, entries] of Object.entries(ifaces)) {
-    if (!entries?.some((e) => !e.internal)) continue;
-    adapters.push({ name, speed: null });
-    if (adapters.length >= 5) break;
+    if (!entries) continue;
+    const external = entries.filter((e) => !e.internal);
+    if (external.length === 0) continue;
+    adapters.push({
+      name,
+      addresses: external.map((e) => e.address).slice(0, 4),
+      family: external[0]?.family ?? "IPv4",
+    });
+    if (adapters.length >= 8) break;
   }
   return {
     success: true,

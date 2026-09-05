@@ -98,6 +98,25 @@ export type EnumeratedWindow = {
   processId: number;
 };
 
+let enumWindowsProcType: ReturnType<typeof koffi.proto> | null = null;
+let enumWindowsFn: ((cb: unknown, lParam: number) => boolean) | null = null;
+
+function getEnumWindows() {
+  if (!enumWindowsProcType) {
+    enumWindowsProcType = koffi.proto(
+      "bool __stdcall EnumWindowsProc(void *hwnd, intptr lParam)",
+    );
+  }
+  if (!enumWindowsFn) {
+    const u32 = getUser32();
+    enumWindowsFn = u32.func("EnumWindows", "bool", [
+      koffi.pointer(enumWindowsProcType),
+      "intptr",
+    ]) as (cb: unknown, lParam: number) => boolean;
+  }
+  return { EnumWindowsProc: enumWindowsProcType, EnumWindows: enumWindowsFn };
+}
+
 export function enumerateOpenWindows(limit = 40): EnumeratedWindow[] {
   if (process.platform !== "win32") return [];
   const u32 = getUser32();
@@ -117,13 +136,7 @@ export function enumerateOpenWindows(limit = 40): EnumeratedWindow[] {
   );
 
   const results: EnumeratedWindow[] = [];
-  const EnumWindowsProc = koffi.proto(
-    "bool __stdcall EnumWindowsProc(void *hwnd, intptr lParam)",
-  );
-  const EnumWindows = u32.func("EnumWindows", "bool", [
-    koffi.pointer(EnumWindowsProc),
-    "intptr",
-  ]);
+  const { EnumWindowsProc, EnumWindows } = getEnumWindows();
 
   const cb = koffi.register((hwnd: object) => {
     if (results.length >= limit) return false;
@@ -188,3 +201,110 @@ export function getNativePowerStatus(): PowerStatusNative {
     percent: pct <= 100 ? pct : null,
   };
 }
+
+export function isWindow(hwnd: number): boolean {
+  if (process.platform !== "win32") return false;
+  const IsWindow = getUser32().func("IsWindow", "bool", ["void *"]);
+  return Boolean(IsWindow(hwnd));
+}
+
+export type WindowRect = { x: number; y: number; width: number; height: number };
+
+export function getWindowRect(hwnd: number): WindowRect | null {
+  if (process.platform !== "win32") return null;
+  const RECT = koffi.struct("RECT", {
+    left: "long",
+    top: "long",
+    right: "long",
+    bottom: "long",
+  });
+  const GetWindowRect = getUser32().func("GetWindowRect", "bool", [
+    "void *",
+    "_Out_ RECT *",
+  ]);
+  const rect = {};
+  if (!GetWindowRect(hwnd, rect)) return null;
+  const r = rect as { left: number; top: number; right: number; bottom: number };
+  return {
+    x: r.left,
+    y: r.top,
+    width: Math.max(0, r.right - r.left),
+    height: Math.max(0, r.bottom - r.top),
+  };
+}
+
+/** SWP flags */
+const SWP_NOSIZE = 0x0001;
+const SWP_NOMOVE = 0x0002;
+const SWP_NOZORDER = 0x0004;
+const SWP_SHOWWINDOW = 0x0040;
+
+export function moveResizeWindow(
+  hwnd: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): void {
+  setWindowPos(
+    hwnd,
+    Math.trunc(x),
+    Math.trunc(y),
+    Math.trunc(width),
+    Math.trunc(height),
+    SWP_NOZORDER | SWP_SHOWWINDOW,
+  );
+}
+
+export function bringWindowToFront(hwnd: number): void {
+  showWindow(hwnd, 9 /* SW_RESTORE */);
+  setForegroundWindow(hwnd);
+}
+
+export type DisplayBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export function snapWindow(
+  hwnd: number,
+  side: "left" | "right",
+  display: DisplayBounds,
+): void {
+  const half = Math.floor(display.width / 2);
+  const x = side === "left" ? display.x : display.x + half;
+  moveResizeWindow(hwnd, x, display.y, half, display.height);
+}
+
+export function centerWindow(hwnd: number, display: DisplayBounds): void {
+  const rect = getWindowRect(hwnd);
+  const w = rect?.width && rect.width > 100 ? rect.width : Math.floor(display.width * 0.6);
+  const h =
+    rect?.height && rect.height > 100 ? rect.height : Math.floor(display.height * 0.6);
+  const x = display.x + Math.floor((display.width - w) / 2);
+  const y = display.y + Math.floor((display.height - h) / 2);
+  moveResizeWindow(hwnd, x, y, w, h);
+}
+
+export function moveWindowToDisplay(
+  hwnd: number,
+  display: DisplayBounds,
+  maximize = false,
+): void {
+  // Place near top-left of target with a comfortable size, then optionally maximize
+  const w = Math.min(1200, Math.floor(display.width * 0.7));
+  const h = Math.min(800, Math.floor(display.height * 0.7));
+  const x = display.x + Math.floor((display.width - w) / 2);
+  const y = display.y + Math.floor((display.height - h) / 2);
+  showWindow(hwnd, 9 /* restore */);
+  moveResizeWindow(hwnd, x, y, w, h);
+  if (maximize) {
+    showWindow(hwnd, 3 /* SW_MAXIMIZE */);
+  }
+  setForegroundWindow(hwnd);
+}
+
+void SWP_NOSIZE;
+void SWP_NOMOVE;
