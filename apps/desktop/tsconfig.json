@@ -11,6 +11,6 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["src/main/**/*", "src/preload/**/*"],
+  "include": ["src/main/**/*", "src/preload/**/*", "src/types/**/*"],
   "exclude": ["src/**/*.test.ts"]
 }

@@ -63,13 +63,20 @@ export async function dispatchDeviceTool(opts: {
   });
 
   if (!response.success) {
+    const rawMessage =
+      response.error?.message ?? "Windows device action failed.";
+    const looksLikeShell =
+      /powershell|executionpolicy|-noprofile|cmd\.exe|add-type/i.test(
+        rawMessage,
+      );
     const code = (response.error?.code ?? "EXECUTION_FAILED") as ToolErrorCode;
     return {
       success: false,
       error: {
-        code,
-        message:
-          response.error?.message ?? "Windows device action failed.",
+        code: looksLikeShell ? "EXECUTION_FAILED" : code,
+        message: looksLikeShell
+          ? "I couldn't complete that Windows action."
+          : rawMessage.slice(0, 180),
       },
       activityLabel: "Device action failed",
       metadata: { deviceId: device.id, durationMs: Date.now() - t0 },

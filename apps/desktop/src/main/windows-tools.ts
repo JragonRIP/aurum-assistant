@@ -74,7 +74,7 @@ export async function executeDesktopTool(opts: {
         message: "Desktop tool failed.",
       },
     };
-    void err;
+    console.error("[aurum:desktop-tool]", opts.tool, err);
   }
   rememberResult(opts.executionId, result);
   return result;
@@ -170,21 +170,22 @@ async function getRunningApps(): Promise<DeviceToolResult> {
     };
   }
   try {
+    // Fixed argv only — CONTROLLED OS API (never model-supplied)
     const { stdout } = await execFileAsync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object -ExpandProperty ProcessName -Unique",
-      ],
+      "tasklist",
+      ["/fo", "csv", "/nh"],
       { timeout: 8000, windowsHide: true },
     );
-    const apps = stdout
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .filter((n) => !isBlockedAppName(n))
-      .slice(0, 40);
+    const names = new Set<string>();
+    for (const line of stdout.split(/\r?\n/)) {
+      const m = /^"([^"]+)"/.exec(line.trim());
+      if (!m?.[1]) continue;
+      const base = m[1].replace(/\.exe$/i, "").trim();
+      if (!base || isBlockedAppName(base)) continue;
+      names.add(base);
+      if (names.size >= 40) break;
+    }
+    const apps = [...names];
     return {
       success: true,
       data: { apps, message: `Found ${apps.length} apps.`, activityLabel: "Apps listed" },

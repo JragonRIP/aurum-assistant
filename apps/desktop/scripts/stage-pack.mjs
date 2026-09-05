@@ -52,6 +52,8 @@ const stagedPkg = {
   dependencies: {
     zod: pkg.dependencies.zod,
     "electron-updater": pkg.dependencies["electron-updater"],
+    loudness: pkg.dependencies.loudness,
+    koffi: pkg.dependencies.koffi,
   },
 };
 fs.writeFileSync(

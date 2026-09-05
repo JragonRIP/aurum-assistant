@@ -31,7 +31,9 @@ export function buildStreamOutcome(opts: {
     opts.finalResponseStatus !== "cancelled";
 
   const warning =
-    opts.actionsCommitted && opts.finalResponseStatus === "failed"
+    opts.actionsCommitted &&
+    opts.finalResponseStatus === "failed" &&
+    !opts.usedFallbackResponse
       ? COMMITTED_ACTION_RESPONSE_WARNING
       : undefined;
 

@@ -37,7 +37,9 @@ export type ToolErrorCode =
   | "AMBIGUOUS_TRACK"
   | "PROVIDER_UNAVAILABLE"
   | "PREMIUM_REQUIRED"
-  | "RATE_LIMITED";
+  | "RATE_LIMITED"
+  | "UNSUPPORTED"
+  | "AUDIO_CONTROL_FAILED";
 
 export interface ToolError {
   code: ToolErrorCode;
@@ -71,6 +73,7 @@ export interface ToolExecutionContext {
   runSpotifyAction?: (
     action: string,
     input: Record<string, unknown>,
+    toolCtx?: ToolExecutionContext,
   ) => Promise<ToolResult>;
   /** Set by executor for the active tool call */
   currentExecutionId?: string;

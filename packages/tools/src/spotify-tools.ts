@@ -163,7 +163,7 @@ function spotifyTool<T extends z.ZodTypeAny>(
           activityLabel: rest.activityLabel,
         };
       }
-      return run(action, input as Record<string, unknown>);
+      return run(action, input as Record<string, unknown>, ctx);
     },
   };
 }

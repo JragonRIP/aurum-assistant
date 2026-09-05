@@ -67,7 +67,7 @@ describe("buildFallbackFromToolResults", () => {
     assert.match(text, /Call Mike/);
   });
 
-  it("reports partial success across tools", () => {
+  it("reports partial success across tools when last tool failed", () => {
     const text = buildFallbackFromToolResults([
       {
         success: true,
@@ -78,8 +78,48 @@ describe("buildFallbackFromToolResults", () => {
         error: { code: "EXECUTION_FAILED", message: "Note not saved." },
       },
     ] as unknown as ToolResult[]);
-    assert.match(text, /Task created/);
-    assert.match(text, /Note not saved/);
+    assert.equal(text, "Note not saved.");
+  });
+
+  it("prefers last success so open+play does not surface device noise", () => {
+    const text = buildFallbackFromToolResults([
+      {
+        success: true,
+        message: "No Spotify playback devices available.",
+      },
+      {
+        success: true,
+        message: "Opened Spotify.",
+      },
+      {
+        success: true,
+        message: "Playing Lil Wayne Hits on Spotify.",
+      },
+    ] as unknown as ToolResult[]);
+    assert.equal(text, "Playing Lil Wayne Hits on Spotify.");
+  });
+
+  it("dedupes duplicate Spotify rejection errors", () => {
+    const text = buildFallbackFromToolResults([
+      {
+        success: false,
+        error: {
+          code: "NO_ACTIVE_DEVICE",
+          message: "Spotify rejected this action. No Spotify playback devices available.",
+        },
+      },
+      {
+        success: false,
+        error: {
+          code: "NO_ACTIVE_DEVICE",
+          message: "Spotify rejected this action. No Spotify playback devices available.",
+        },
+      },
+    ] as unknown as ToolResult[]);
+    assert.equal(
+      text,
+      "Spotify rejected this action. No Spotify playback devices available.",
+    );
   });
 });
 
@@ -97,19 +137,28 @@ describe("GenerationOutcome / client reconciliation", () => {
     assert.equal(client.responseWarning, null);
   });
 
-  it("2. tool succeeds + Gemini continuation fails → soft warning, no full error", () => {
+  it("2. tool succeeds + Gemini continuation fails + fallback used → no scary warning", () => {
     const outcome = buildStreamOutcome({
       actionsCommitted: true,
-      finalResponseStatus: "failed",
+      finalResponseStatus: "completed",
       usedFallbackResponse: true,
     });
     assert.equal(outcome.allowFullRetry, false);
-    assert.equal(outcome.warning, COMMITTED_ACTION_RESPONSE_WARNING);
+    assert.equal(outcome.warning, undefined);
     const client = resolveClientDoneOutcome(outcome);
     assert.equal(client.showFullError, false);
     assert.equal(client.errorMessage, null);
     assert.equal(client.allowFullRetry, false);
-    assert.equal(client.responseWarning, COMMITTED_ACTION_RESPONSE_WARNING);
+    assert.equal(client.responseWarning, null);
+  });
+
+  it("2b. tool succeeds + Gemini fails with no fallback text → soft warning", () => {
+    const outcome = buildStreamOutcome({
+      actionsCommitted: true,
+      finalResponseStatus: "failed",
+      usedFallbackResponse: false,
+    });
+    assert.equal(outcome.warning, COMMITTED_ACTION_RESPONSE_WARNING);
   });
 
   it("3. tool succeeds + provider 503 after execution → late error does not erase success", () => {
@@ -171,7 +220,7 @@ describe("GenerationOutcome / client reconciliation", () => {
     assert.equal(outcome.actionsCommitted, true);
   });
 
-  it("9. two tools: one succeeds, one fails → fallback shows both", () => {
+  it("9. two tools: one succeeds, one fails → fallback prefers last error", () => {
     const text = buildFallbackFromToolResults([
       {
         success: true,
@@ -182,8 +231,7 @@ describe("GenerationOutcome / client reconciliation", () => {
         error: { code: "X", message: "Note not saved." },
       },
     ] as unknown as ToolResult[]);
-    assert.ok(text.includes("Task created"));
-    assert.ok(text.includes("Note not saved"));
+    assert.equal(text, "Note not saved.");
     const outcome = buildStreamOutcome({
       actionsCommitted: true,
       finalResponseStatus: "failed",
@@ -191,16 +239,17 @@ describe("GenerationOutcome / client reconciliation", () => {
     });
     assert.equal(outcome.actionsCommitted, true);
     assert.equal(outcome.allowFullRetry, false);
+    assert.equal(outcome.warning, undefined);
   });
 
-  it("10. two tools succeed + final AI continuation fails", () => {
+  it("10. two tools succeed + final AI continuation fails with fallback → no warning", () => {
     const outcome = buildStreamOutcome({
       actionsCommitted: true,
-      finalResponseStatus: "failed",
+      finalResponseStatus: "completed",
       usedFallbackResponse: true,
     });
     assert.equal(outcome.allowFullRetry, false);
-    assert.equal(outcome.warning, COMMITTED_ACTION_RESPONSE_WARNING);
+    assert.equal(outcome.warning, undefined);
   });
 
   it("11. tool fails before any write → normal full error + retry allowed", () => {

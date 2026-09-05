@@ -405,13 +405,45 @@ export function createChatStream(options: {
                 },
               });
             },
-            runSpotifyAction: async (action, input) => {
+            runSpotifyAction: async (action, input, toolCtx) => {
+              const signal = toolCtx?.signal ?? options.signal;
+              const dispatch =
+                toolCtx?.dispatchDeviceTool ??
+                (async (tool, toolInput, executionId) =>
+                  dispatchDeviceTool({
+                    supabase: options.supabase,
+                    userId: options.userId,
+                    tool,
+                    input: toolInput,
+                    executionId,
+                    signal,
+                    log: (event) => {
+                      if (logTiming) console.info("[aurum:device]", event);
+                    },
+                  }));
               return runSpotifyTool({
                 supabase: options.supabase,
                 userId: options.userId,
                 conversationId: options.conversationId,
                 action,
                 input,
+                signal,
+                openSpotifyDesktop: async () => {
+                  const executionId = `${
+                    toolCtx?.currentExecutionId ??
+                    options.generationId ??
+                    "gen"
+                  }:open-spotify`;
+                  const result = await dispatch(
+                    "open_application",
+                    { app: "Spotify" },
+                    executionId,
+                  );
+                  return {
+                    ok: result.success,
+                    message: result.message ?? result.error?.message,
+                  };
+                },
               });
             },
           },

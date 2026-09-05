@@ -1,10 +1,19 @@
 /**
- * WindowsSystemAdapter — typed OS actions via allowlisted fixed scripts.
+ * WindowsSystemAdapter — typed OS actions.
+ * Audio uses constrained Core Audio helper (loudness). Win32 via koffi.
  * Never executes model-supplied shell/PowerShell strings.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
+import {
+  adjustMasterVolumePercent,
+  getMasterAudioState,
+  sanitizeWindowsToolError,
+  setMasterMuted,
+  setMasterVolumePercent,
+  WindowsAudioError,
+} from "./windows-audio";
 import {
   rememberAudioDevice,
   rememberWindow,
@@ -12,6 +21,15 @@ import {
   resolveWindow,
 } from "./trusted-refs";
 import type { DeviceToolResult } from "./windows-tools";
+import {
+  enumerateOpenWindows,
+  getNativePowerStatus,
+  postCloseWindow,
+  setForegroundWindow,
+  setWindowPos,
+  showWindow,
+  tapMediaKey,
+} from "./windows-win32";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,76 +38,25 @@ function clampPercent(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-async function runPs(script: string, timeoutMs = 12_000): Promise<string> {
-  if (process.platform !== "win32") {
-    throw new Error("Windows only");
+function failSafe(err: unknown, fallbackMessage: string): DeviceToolResult {
+  const sanitized = sanitizeWindowsToolError(err);
+  if (sanitized.code === "AUDIO_CONTROL_FAILED" || sanitized.code === "UNSUPPORTED") {
+    return {
+      success: false,
+      error: { code: sanitized.code, message: sanitized.message },
+    };
   }
-  const { stdout } = await execFileAsync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-    { timeout: timeoutMs, windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
-  );
-  return stdout.trim();
+  return {
+    success: false,
+    error: { code: "EXECUTION_FAILED", message: fallbackMessage },
+  };
 }
 
-/** Fixed Core Audio helper — only numeric literals are substituted. */
-const AUDIO_HELPER = `
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-[Guid("5CDF2C82-841E-4546-9722-0CF740782BA3"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IAudioEndpointVolume {
-  int NotImpl1(); int NotImpl2();
-  int GetChannelCount(out int pcChannels);
-  int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
-  int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
-  int GetMasterVolumeLevel(out float pfLevelDB);
-  int GetMasterVolumeLevelScalar(out float pfLevel);
-  int SetChannelVolumeLevel(uint nChannel, float fLevelDB, Guid pguidEventContext);
-  int SetChannelVolumeLevelScalar(uint nChannel, float fLevel, Guid pguidEventContext);
-  int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
-  int GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
-  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, Guid pguidEventContext);
-  int GetMute(out bool pbMute);
-}
-[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice {
-  int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
-}
-[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDeviceEnumerator {
-  int EnumAudioEndpoints(int dataFlow, int dwStateMask, out IntPtr ppDevices);
-  int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
-}
-[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
-public class AurumAudio {
-  static IAudioEndpointVolume Vol() {
-    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
-    IMMDevice device; enumerator.GetDefaultAudioEndpoint(0, 0, out device);
-    Guid iid = typeof(IAudioEndpointVolume).GUID;
-    object o; device.Activate(ref iid, 1, IntPtr.Zero, out o);
-    return (IAudioEndpointVolume)o;
-  }
-  public static float GetVolume() { float v; Vol().GetMasterVolumeLevelScalar(out v); return v; }
-  public static void SetVolume(float v) { Vol().SetMasterVolumeLevelScalar(v, Guid.Empty); }
-  public static bool GetMute() { bool m; Vol().GetMute(out m); return m; }
-  public static void SetMute(bool m) { Vol().SetMute(m, Guid.Empty); }
-}
-"@ -ErrorAction SilentlyContinue
-`;
-
-function mediaKeyScript(vk: number): string {
-  // vk is a fixed constant from our code only
-  return `
-Add-Type -TypeDefinition @"
-using System; using System.Runtime.InteropServices;
-public class AurumKeys {
-  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-  public static void Tap(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, 2, UIntPtr.Zero); }
-}
-"@
-[AurumKeys]::Tap(${vk})
-`;
+function unsupported(message: string): DeviceToolResult {
+  return {
+    success: false,
+    error: { code: "UNSUPPORTED", message },
+  };
 }
 
 export async function windowsSystemExecute(
@@ -108,7 +75,10 @@ export async function windowsSystemExecute(
     ) {
       return {
         success: false,
-        error: { code: "UNSUPPORTED", message: "Windows system tools require Windows." },
+        error: {
+          code: "UNSUPPORTED",
+          message: "Windows system tools require Windows.",
+        },
       };
     }
     return null;
@@ -131,63 +101,68 @@ export async function windowsSystemExecute(
       case "toggle_system_mute":
         return await toggleMute();
       case "get_audio_output_devices":
-        return await listAudioDevices("render");
       case "get_audio_input_devices":
-        return await listAudioDevices("capture");
+        return unsupported(
+          "Listing audio devices isn't available in this build. Use Windows Sound settings.",
+        );
       case "set_audio_output_device":
         return await setAudioOutput(payload.audioDeviceReference);
       case "media_play_pause":
-        await runPs(mediaKeyScript(0xb3));
+        tapMediaKey("play_pause");
         return { success: true, data: { activityLabel: "Play/pause sent" } };
       case "media_next":
-        await runPs(mediaKeyScript(0xb0));
+        tapMediaKey("next");
         return { success: true, data: { activityLabel: "Next media" } };
       case "media_previous":
-        await runPs(mediaKeyScript(0xb1));
+        tapMediaKey("previous");
         return { success: true, data: { activityLabel: "Previous media" } };
       case "media_stop":
-        await runPs(mediaKeyScript(0xb2));
+        tapMediaKey("stop");
         return { success: true, data: { activityLabel: "Stop media" } };
       case "get_current_media_session":
-        return await getMediaSession();
+        return unsupported(
+          "Media session details aren't available without shell access on this build.",
+        );
       case "get_open_windows":
-        return await getOpenWindows();
+        return getOpenWindows();
       case "focus_window":
-        return await windowAction(payload.windowReference, "focus");
+        return windowAction(payload.windowReference, "focus");
       case "minimize_window":
-        return await windowAction(payload.windowReference, "minimize");
+        return windowAction(payload.windowReference, "minimize");
       case "maximize_window":
-        return await windowAction(payload.windowReference, "maximize");
+        return windowAction(payload.windowReference, "maximize");
       case "restore_window":
-        return await windowAction(payload.windowReference, "restore");
+        return windowAction(payload.windowReference, "restore");
       case "close_window":
-        return await windowAction(payload.windowReference, "close");
+        return windowAction(payload.windowReference, "close");
       case "move_window":
-        return await moveWindow(
+        return moveWindow(
           payload.windowReference,
           Number(payload.x),
           Number(payload.y),
         );
       case "resize_window":
-        return await resizeWindow(
+        return resizeWindow(
           payload.windowReference,
           Number(payload.width),
           Number(payload.height),
         );
       case "get_display_info":
-        return await getDisplayInfo();
+        return getDisplayInfo();
       case "get_battery_status":
       case "get_power_status":
-        return await getPowerStatus();
+        return getPowerStatus();
       case "get_system_info":
         return getSystemInfo();
       case "get_network_status":
-        return await getNetworkStatus();
+        return getNetworkStatus();
       case "get_brightness":
-        return await getBrightness();
       case "set_brightness":
-        return await setBrightness(clampPercent(Number(payload.percent)));
+        return unsupported(
+          "Display brightness isn't available without shell access on this build.",
+        );
       case "lock_pc":
+        // Fixed argv only — CONTROLLED OS API (never model-supplied)
         await execFileAsync(
           "rundll32.exe",
           ["user32.dll,LockWorkStation"],
@@ -217,110 +192,81 @@ export async function windowsSystemExecute(
         return null;
     }
   } catch (err) {
-    return {
-      success: false,
-      error: {
-        code: "EXECUTION_FAILED",
-        message: err instanceof Error ? err.message.slice(0, 200) : "Windows action failed.",
-      },
-    };
+    console.error("[aurum:windows-system]", tool, err);
+    if (err instanceof WindowsAudioError) {
+      return {
+        success: false,
+        error: { code: err.code, message: err.message },
+      };
+    }
+    return failSafe(err, "I couldn't complete that Windows action.");
   }
 }
 
 async function getSystemVolume(): Promise<DeviceToolResult> {
-  const out = await runPs(`
-${AUDIO_HELPER}
-$v = [math]::Round([AurumAudio]::GetVolume() * 100)
-$m = [AurumAudio]::GetMute()
-Write-Output "$v|$m"
-`);
-  const [vs, ms] = out.split("|");
-  const percent = clampPercent(Number(vs));
-  const muted = String(ms).toLowerCase() === "true";
+  const state = await getMasterAudioState();
   return {
     success: true,
-    data: { percent, muted, activityLabel: `Volume ${percent}%` },
+    data: {
+      percent: state.volume,
+      muted: state.muted,
+      volume: state.volume,
+      activityLabel: `Volume ${state.volume}%`,
+    },
+    message: state.muted
+      ? `Volume is muted (${state.volume}%).`
+      : `Volume is ${state.volume}%.`,
   };
 }
 
 async function setSystemVolume(percent: number): Promise<DeviceToolResult> {
-  const p = clampPercent(percent);
-  await runPs(`
-${AUDIO_HELPER}
-[AurumAudio]::SetVolume(${(p / 100).toFixed(4)})
-[AurumAudio]::SetMute($false)
-`);
+  const state = await setMasterVolumePercent(percent);
   return {
     success: true,
-    data: { percent: p, muted: false, activityLabel: `Setting volume · ${p}%` },
+    data: {
+      percent: state.volume,
+      muted: state.muted,
+      volume: state.volume,
+      activityLabel: `Setting volume · ${state.volume}%`,
+    },
+    message: `Windows volume set to ${state.volume}%.`,
   };
 }
 
 async function bumpVolume(delta: number): Promise<DeviceToolResult> {
-  const cur = await getSystemVolume();
-  const current = Number((cur.data as { percent?: number })?.percent ?? 0);
-  return setSystemVolume(current + delta);
-}
-
-async function setMute(muted: boolean): Promise<DeviceToolResult> {
-  await runPs(`
-${AUDIO_HELPER}
-[AurumAudio]::SetMute($${muted ? "true" : "false"})
-`);
+  const state = await adjustMasterVolumePercent(delta);
   return {
     success: true,
     data: {
-      muted,
+      percent: state.volume,
+      muted: state.muted,
+      volume: state.volume,
+      activityLabel:
+        delta >= 0
+          ? `Increasing volume · ${state.volume}%`
+          : `Decreasing volume · ${state.volume}%`,
+    },
+    message: `Windows volume is now ${state.volume}%.`,
+  };
+}
+
+async function setMute(muted: boolean): Promise<DeviceToolResult> {
+  const state = await setMasterMuted(muted);
+  return {
+    success: true,
+    data: {
+      muted: state.muted,
+      volume: state.volume,
+      percent: state.volume,
       activityLabel: muted ? "Muting audio" : "Unmuting audio",
     },
+    message: muted ? "Windows audio muted." : "Windows audio unmuted.",
   };
 }
 
 async function toggleMute(): Promise<DeviceToolResult> {
-  const cur = await getSystemVolume();
-  const muted = Boolean((cur.data as { muted?: boolean })?.muted);
-  return setMute(!muted);
-}
-
-async function listAudioDevices(
-  direction: "render" | "capture",
-): Promise<DeviceToolResult> {
-  const flow = direction === "render" ? 0 : 1;
-  const out = await runPs(`
-$ErrorActionPreference = 'SilentlyContinue'
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-# Fallback: list via Win32_PnP / Sound devices names
-Get-CimInstance Win32_SoundDevice | Select-Object -ExpandProperty Name
-`);
-  const names = out
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 20);
-  const devices = names.map((name, i) => {
-    const id = `${direction}:${i}:${name}`;
-    const referenceId = rememberAudioDevice({
-      id,
-      name,
-      direction,
-      isDefault: i === 0,
-    });
-    return {
-      referenceId,
-      name,
-      direction,
-      default: i === 0,
-    };
-  });
-  void flow;
-  return {
-    success: true,
-    data: {
-      devices,
-      activityLabel:
-        direction === "render" ? "Listed audio devices" : "Listed microphones",
-    },
-  };
+  const cur = await getMasterAudioState();
+  return setMute(!cur.muted);
 }
 
 async function setAudioOutput(ref: unknown): Promise<DeviceToolResult> {
@@ -334,71 +280,24 @@ async function setAudioOutput(ref: unknown): Promise<DeviceToolResult> {
       },
     };
   }
-  // Default endpoint switch requires vendor APIs; report honest limitation with trusted label.
-  return {
-    success: false,
-    error: {
-      code: "UNSUPPORTED",
-      message: `Switching default audio to “${device.name}” requires Windows sound settings on this build. Open Settings → System → Sound, or tell me to open Sound settings.`,
-    },
-    data: { device: device.name },
-  };
+  void rememberAudioDevice;
+  return unsupported(
+    `Switching default audio to “${device.name}” isn't available in this build. Open Settings → System → Sound.`,
+  );
 }
 
-async function getMediaSession(): Promise<DeviceToolResult> {
-  try {
-    const out = await runPs(`
-$s = Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object -First 8 ProcessName, MainWindowTitle
-$s | ForEach-Object { "$($_.ProcessName)|$($_.MainWindowTitle)" }
-`);
-    const sessions = out
-      .split(/\r?\n/)
-      .map((line) => {
-        const [processName, ...rest] = line.split("|");
-        return {
-          processName: processName?.trim() ?? "",
-          title: rest.join("|").trim(),
-        };
-      })
-      .filter((s) => s.title);
-    return {
-      success: true,
-      data: {
-        sessions,
-        note: "Windows GlobalSystemMediaTransportControls may be unavailable; showing window titles instead.",
-        activityLabel: "Checked media session",
-      },
-    };
-  } catch {
-    return {
-      success: true,
-      data: { sessions: [], activityLabel: "No media session" },
-    };
-  }
-}
-
-async function getOpenWindows(): Promise<DeviceToolResult> {
-  const out = await runPs(`
-Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } |
-  Select-Object -First 40 ProcessName, Id, MainWindowTitle, MainWindowHandle |
-  ForEach-Object { "$($_.MainWindowHandle)|$($_.ProcessName)|$($_.MainWindowTitle)" }
-`);
+function getOpenWindows(): DeviceToolResult {
   const windows = [];
-  for (const line of out.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const [hwndStr, processName, ...titleParts] = line.split("|");
-    const hwnd = Number(hwndStr);
-    if (!Number.isFinite(hwnd) || hwnd === 0) continue;
-    const title = titleParts.join("|").trim();
+  for (const w of enumerateOpenWindows(40)) {
     const referenceId = rememberWindow({
-      hwnd,
-      title,
-      processName: (processName ?? "").trim(),
+      hwnd: w.hwnd,
+      title: w.title,
+      processName: `pid:${w.processId}`,
     });
     windows.push({
       referenceId,
-      title,
-      processName: (processName ?? "").trim(),
+      title: w.title,
+      processName: `pid:${w.processId}`,
     });
   }
   return {
@@ -407,10 +306,10 @@ Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle }
   };
 }
 
-async function windowAction(
+function windowAction(
   ref: unknown,
   action: "focus" | "minimize" | "maximize" | "restore" | "close",
-): Promise<DeviceToolResult> {
+): DeviceToolResult {
   const win = resolveWindow(ref);
   if (!win) {
     return {
@@ -439,27 +338,10 @@ async function windowAction(
           : 0;
 
   if (action === "close") {
-    await runPs(`
-Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class AurumWin {
-  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-}
-"@
-[AurumWin]::PostMessage([IntPtr]${hwnd}, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-`);
+    postCloseWindow(hwnd);
   } else {
-    await runPs(`
-Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class AurumWin {
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-[AurumWin]::ShowWindow([IntPtr]${hwnd}, ${showCmd}) | Out-Null
-[AurumWin]::SetForegroundWindow([IntPtr]${hwnd}) | Out-Null
-`);
+    showWindow(hwnd, showCmd);
+    setForegroundWindow(hwnd);
   }
 
   return {
@@ -477,11 +359,7 @@ public class AurumWin {
   };
 }
 
-async function moveWindow(
-  ref: unknown,
-  x: number,
-  y: number,
-): Promise<DeviceToolResult> {
+function moveWindow(ref: unknown, x: number, y: number): DeviceToolResult {
   const win = resolveWindow(ref);
   if (!win) {
     return {
@@ -495,23 +373,15 @@ async function moveWindow(
   const hwnd = Math.trunc(win.hwnd);
   const xi = Math.trunc(x);
   const yi = Math.trunc(y);
-  await runPs(`
-Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class AurumWin {
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-}
-"@
-[AurumWin]::SetWindowPos([IntPtr]${hwnd}, [IntPtr]::Zero, ${xi}, ${yi}, 0, 0, 0x0001 -bor 0x0004) | Out-Null
-`);
+  setWindowPos(hwnd, xi, yi, 0, 0, 0x0001 | 0x0004);
   return { success: true, data: { title: win.title, x: xi, y: yi } };
 }
 
-async function resizeWindow(
+function resizeWindow(
   ref: unknown,
   width: number,
   height: number,
-): Promise<DeviceToolResult> {
+): DeviceToolResult {
   const win = resolveWindow(ref);
   if (!win) {
     return {
@@ -525,53 +395,37 @@ async function resizeWindow(
   const hwnd = Math.trunc(win.hwnd);
   const w = Math.max(100, Math.min(10000, Math.trunc(width)));
   const h = Math.max(100, Math.min(10000, Math.trunc(height)));
-  await runPs(`
-Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class AurumWin {
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-}
-"@
-[AurumWin]::SetWindowPos([IntPtr]${hwnd}, [IntPtr]::Zero, 0, 0, ${w}, ${h}, 0x0002 -bor 0x0004) | Out-Null
-`);
+  setWindowPos(hwnd, 0, 0, w, h, 0x0002 | 0x0004);
   return { success: true, data: { title: win.title, width: w, height: h } };
 }
 
-async function getDisplayInfo(): Promise<DeviceToolResult> {
-  const out = await runPs(`
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
-  "$($_.DeviceName)|$($_.Bounds.Width)|$($_.Bounds.Height)|$($_.Primary)"
-}
-`);
-  const displays = out
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const [name, w, h, primary] = line.split("|");
-      return {
-        name: name ?? "Display",
-        width: Number(w),
-        height: Number(h),
-        primary: String(primary).toLowerCase() === "true",
-      };
-    });
-  return { success: true, data: { displays, activityLabel: "Checked displays" } };
+function getDisplayInfo(): DeviceToolResult {
+  try {
+    // Electron main process screen API — SAFE NODE/ELECTRON API
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { screen } = require("electron") as typeof import("electron");
+    const displays = screen.getAllDisplays().map((d, i) => ({
+      name: d.label || `Display ${i + 1}`,
+      width: d.size.width,
+      height: d.size.height,
+      primary: d.id === screen.getPrimaryDisplay().id,
+    }));
+    return {
+      success: true,
+      data: { displays, activityLabel: "Checked displays" },
+    };
+  } catch {
+    return unsupported("Could not read display information.");
+  }
 }
 
-async function getPowerStatus(): Promise<DeviceToolResult> {
-  const out = await runPs(`
-$b = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($b) { Write-Output "$($b.EstimatedChargeRemaining)|$($b.BatteryStatus)" } else { Write-Output "AC|0" }
-`);
-  const [charge, status] = out.split("|");
-  const percent = charge === "AC" ? null : clampPercent(Number(charge));
+function getPowerStatus(): DeviceToolResult {
+  const status = getNativePowerStatus();
   return {
     success: true,
     data: {
-      onBattery: charge !== "AC",
-      percent,
-      batteryStatus: status ?? null,
+      onBattery: status.onBattery,
+      percent: status.percent,
       activityLabel: "Checked power",
     },
   };
@@ -592,64 +446,20 @@ function getSystemInfo(): DeviceToolResult {
   };
 }
 
-async function getNetworkStatus(): Promise<DeviceToolResult> {
-  const online = true;
-  const out = await runPs(`
-Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
-  Where-Object Status -eq 'Up' |
-  Select-Object -First 3 Name, LinkSpeed |
-  ForEach-Object { "$($_.Name)|$($_.LinkSpeed)" }
-`);
-  const adapters = out
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const [name, speed] = line.split("|");
-      return { name, speed };
-    });
+function getNetworkStatus(): DeviceToolResult {
+  const ifaces = os.networkInterfaces();
+  const adapters: Array<{ name: string; speed: string | null }> = [];
+  for (const [name, entries] of Object.entries(ifaces)) {
+    if (!entries?.some((e) => !e.internal)) continue;
+    adapters.push({ name, speed: null });
+    if (adapters.length >= 5) break;
+  }
   return {
     success: true,
-    data: { online, adapters, activityLabel: "Checked network" },
+    data: {
+      online: adapters.length > 0,
+      adapters,
+      activityLabel: "Checked network",
+    },
   };
-}
-
-async function getBrightness(): Promise<DeviceToolResult> {
-  try {
-    const out = await runPs(`
-(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop |
-  Select-Object -First 1 CurrentBrightness).CurrentBrightness
-`);
-    const percent = clampPercent(Number(out));
-    return { success: true, data: { percent, activityLabel: `Brightness ${percent}%` } };
-  } catch {
-    return {
-      success: false,
-      error: {
-        code: "UNSUPPORTED",
-        message: "Brightness is not exposed on this display.",
-      },
-    };
-  }
-}
-
-async function setBrightness(percent: number): Promise<DeviceToolResult> {
-  const p = clampPercent(percent);
-  try {
-    await runPs(`
-$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | Select-Object -First 1
-Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{Timeout=1; Brightness=${p}} | Out-Null
-`);
-    return {
-      success: true,
-      data: { percent: p, activityLabel: `Setting brightness · ${p}%` },
-    };
-  } catch {
-    return {
-      success: false,
-      error: {
-        code: "UNSUPPORTED",
-        message: "Could not set brightness on this display.",
-      },
-    };
-  }
 }

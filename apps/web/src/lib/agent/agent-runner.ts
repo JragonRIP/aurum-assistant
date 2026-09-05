@@ -271,14 +271,19 @@ export async function runAgentWithTools(options: {
 
       if (toolResults.some((r) => r.success)) {
         // Committed actions survive — emit fallback text from ToolResults
-        finalResponseStatus = "failed";
-        finalResponseError = { code, message };
         const fallback = buildFallbackFromToolResults(toolResults);
         if (fallback && !fullText) {
           usedFallbackResponse = true;
           options.hooks?.onStatus?.("responding");
           options.hooks?.onDelta?.(fallback);
           fullText = fallback;
+          // Fallback text is the final assistant response — do not leave
+          // the pipeline in a "failed with no response" state.
+          finalResponseStatus = "completed";
+          finalResponseError = undefined;
+        } else {
+          finalResponseStatus = "failed";
+          finalResponseError = { code, message };
         }
         break;
       }
@@ -404,10 +409,10 @@ export async function runAgentWithTools(options: {
     finalResponseStatus = fullText.trim() ? "completed" : "failed";
   }
 
-  // If tools succeeded but Gemini produced no final text, use deterministic fallback
+  // If tools ran but Gemini produced no final text, use deterministic fallback
   if (
     !fullText.trim() &&
-    toolResults.some((r) => r.success) &&
+    toolResults.length > 0 &&
     finalResponseStatus !== "cancelled"
   ) {
     const fallback = buildFallbackFromToolResults(toolResults);
@@ -416,10 +421,13 @@ export async function runAgentWithTools(options: {
       options.hooks?.onStatus?.("responding");
       options.hooks?.onDelta?.(fallback);
       fullText = fallback;
-      if (finalResponseStatus === "failed") {
-        // keep failed status for AI continuation, but we have usable text
-      } else {
+      // Prefer completed when we have user-visible text from tools.
+      // Keep failed only when every tool failed (no committed success).
+      if (toolResults.some((r) => r.success)) {
         finalResponseStatus = "completed";
+        finalResponseError = undefined;
+      } else if (finalResponseStatus !== "failed") {
+        finalResponseStatus = "failed";
       }
     }
   }
@@ -438,18 +446,39 @@ export async function runAgentWithTools(options: {
 }
 
 export function buildFallbackFromToolResults(results: ToolResult[]): string {
+  if (results.length === 0) return "";
+
+  // Prefer the last successful tool message — preserves primary intent
+  // (e.g. play after open) without concatenating intermediate noise.
+  const last = results[results.length - 1]!;
+  if (last.success) {
+    const msg = (last.message ?? last.activityLabel ?? "Done.").trim();
+    if (msg) return msg;
+  }
+
   const lines: string[] = [];
+  const seen = new Set<string>();
   for (const r of results) {
+    let msg: string | undefined;
     if (r.success) {
-      lines.push(r.message ?? r.activityLabel ?? "Done.");
+      msg = r.message ?? r.activityLabel ?? "Done.";
     } else if (r.error?.code === "AMBIGUOUS_MATCH") {
-      lines.push(r.error.message);
+      msg = r.error.message;
     } else if (r.error) {
-      lines.push(r.error.message);
+      msg = r.error.message;
     }
+    if (!msg) continue;
+    const key = msg.trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    lines.push(key);
   }
   if (lines.length === 0) return "";
   if (lines.length === 1) return lines[0]!;
+  // Last unique line wins when the final tool failed (one clean error).
+  if (!last.success && last.error?.message) {
+    return last.error.message.trim();
+  }
   return lines.join(" ");
 }
 

@@ -17,6 +17,9 @@ extraMetadata:
   main: dist/main/index.js
 
 asar: true
+asarUnpack:
+  - "**/*.exe"
+  - "**/loudness/**"
 npmRebuild: false
 electronVersion: 35.7.5
 

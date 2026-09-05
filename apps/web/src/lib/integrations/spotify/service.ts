@@ -20,6 +20,10 @@ import {
   resolveIntegrationReference,
 } from "./references";
 import {
+  ensureSpotifyPlaybackDevice,
+  type RecoverableDevice,
+} from "./device-recovery";
+import {
   clampVolume,
   setMediaContext,
   type MediaContext,
@@ -69,6 +73,16 @@ type CredentialRow = {
 };
 
 function toToolError(err: unknown): ToolResult {
+  if (
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
+  ) {
+    return {
+      success: false,
+      error: { code: "CANCELLED", message: "Cancelled." },
+      activityLabel: "Cancelled",
+    };
+  }
   if (err instanceof SpotifyApiError) {
     return {
       success: false,
@@ -555,6 +569,10 @@ export async function runSpotifyTool(opts: {
   conversationId?: string;
   action: string;
   input: Record<string, unknown>;
+  signal?: AbortSignal;
+  /** Opens Spotify desktop via Windows companion (at most once per recovery). */
+  openSpotifyDesktop?: () => Promise<{ ok: boolean; message?: string }>;
+  onActivity?: (label: string) => void;
 }): Promise<ToolResult> {
   try {
     if (!isSpotifyConfigured()) {
@@ -573,6 +591,79 @@ export async function runSpotifyTool(opts: {
       userId: opts.userId,
     });
     const adapter = new SpotifyAdapter(accessToken);
+
+    // At most one Windows open_application per play_* recovery sequence
+    let openSpotifyPromise: Promise<{ ok: boolean; message?: string }> | null =
+      null;
+    const openSpotifyOnce = opts.openSpotifyDesktop
+      ? () => {
+          if (!openSpotifyPromise) {
+            openSpotifyPromise = opts.openSpotifyDesktop!();
+          }
+          return openSpotifyPromise;
+        }
+      : undefined;
+
+    const recoverDevice = async (
+      preferredDeviceId?: string,
+    ): Promise<
+      | { ok: true; deviceId: string }
+      | { ok: false; result: ToolResult }
+    > => {
+      if (preferredDeviceId) {
+        return { ok: true, deviceId: preferredDeviceId };
+      }
+
+      const recovery = await ensureSpotifyPlaybackDevice({
+        getDevices: async () => {
+          const devices = await adapter.getDevices();
+          return devices.map(
+            (d): RecoverableDevice => ({
+              id: d.id,
+              name: d.name,
+              type: d.type,
+              isActive: d.isActive,
+              isRestricted: d.isRestricted,
+            }),
+          );
+        },
+        openSpotifyDesktop: openSpotifyOnce,
+        transferPlayback: (deviceId, play) =>
+          adapter.transferPlayback(deviceId, play),
+        signal: opts.signal,
+        onActivity: opts.onActivity,
+      });
+
+      if (!recovery.ok) {
+        if (recovery.cancelled) {
+          return {
+            ok: false,
+            result: {
+              success: false,
+              error: { code: "CANCELLED", message: "Cancelled." },
+              activityLabel: "Cancelled",
+            },
+          };
+        }
+        return {
+          ok: false,
+          result: {
+            success: false,
+            error: {
+              code: "NO_ACTIVE_DEVICE",
+              message: recovery.message,
+            },
+            activityLabel: "Waiting for Spotify",
+            data: {
+              openedSpotify: recovery.openedSpotify,
+              recoveryFailed: true,
+            },
+          },
+        };
+      }
+
+      return { ok: true, deviceId: recovery.deviceId };
+    };
 
     switch (opts.action) {
       case "get_playback_state": {
@@ -783,6 +874,13 @@ export async function runSpotifyTool(opts: {
           deviceId = deviceRef.provider_id;
         }
 
+        if (!deviceId) {
+          const ready = await recoverDevice();
+          if (!ready.ok) return ready.result;
+          deviceId = ready.deviceId;
+        }
+
+        opts.onActivity?.("Starting playback…");
         try {
           await adapter.play({ uris: [trackRef.provider_uri], deviceId });
         } catch (err) {
@@ -790,21 +888,13 @@ export async function runSpotifyTool(opts: {
             err instanceof SpotifyApiError &&
             err.code === "NO_ACTIVE_DEVICE"
           ) {
-            // Short bounded wait for desktop client to appear
-            for (let i = 0; i < 4; i++) {
-              await new Promise((r) => setTimeout(r, 800));
-              const devices = await adapter.getDevices();
-              const usable = devices.find((d) => d.id && !d.isRestricted);
-              if (usable) {
-                await adapter.play({
-                  uris: [trackRef.provider_uri],
-                  deviceId: usable.id,
-                });
-                deviceId = usable.id;
-                break;
-              }
-              if (i === 3) throw err;
-            }
+            const ready = await recoverDevice();
+            if (!ready.ok) return ready.result;
+            deviceId = ready.deviceId;
+            await adapter.play({
+              uris: [trackRef.provider_uri],
+              deviceId,
+            });
           } else {
             throw err;
           }
@@ -1136,14 +1226,49 @@ export async function runSpotifyTool(opts: {
           });
           deviceId = deviceRef?.provider_id;
         }
-        await adapter.playContext({
-          contextUri: cref.provider_uri,
-          deviceId,
-        });
+
+        if (!deviceId) {
+          const ready = await recoverDevice();
+          if (!ready.ok) return ready.result;
+          deviceId = ready.deviceId;
+        }
+
+        opts.onActivity?.(
+          kind === "playlist" ? "Starting playlist…" : "Starting album…",
+        );
+        try {
+          await adapter.playContext({
+            contextUri: cref.provider_uri,
+            deviceId,
+          });
+        } catch (err) {
+          if (
+            err instanceof SpotifyApiError &&
+            err.code === "NO_ACTIVE_DEVICE"
+          ) {
+            const ready = await recoverDevice();
+            if (!ready.ok) return ready.result;
+            deviceId = ready.deviceId;
+            await adapter.playContext({
+              contextUri: cref.provider_uri,
+              deviceId,
+            });
+          } else {
+            throw err;
+          }
+        }
+
+        if (opts.conversationId) {
+          setMediaContext(opts.conversationId, {
+            trackLabel: cref.label,
+            isPlaying: true,
+          });
+        }
+
         return {
           success: true,
-          data: { name: cref.label, kind },
-          message: `Playing ${cref.label}.`,
+          data: { name: cref.label, kind, referenceId: cref.id },
+          message: `Playing ${cref.label} on Spotify.`,
           activityLabel: `Playing · ${cref.label}`,
         };
       }
