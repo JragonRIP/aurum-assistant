@@ -1,0 +1,6 @@
+# Local Vercel link metadata — do not ignore env.example
+.vercel
+.env
+.env.local
+.env*.local
+!.env.example
