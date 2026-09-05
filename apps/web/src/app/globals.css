@@ -1,0 +1,69 @@
+@import "tailwindcss";
+@source "../../../../packages/ui/src";
+@import "@aurum/ui/styles.css";
+
+:root {
+  --aurum-font-display: var(--font-fraunces), "Georgia", serif;
+  --aurum-font-body: var(--font-sora), "Segoe UI", sans-serif;
+  --aurum-font-mono: var(--font-plex-mono), "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  overflow-x: hidden;
+  background: var(--aurum-bg);
+  color: var(--aurum-text);
+  font-family: var(--aurum-font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-image:
+    radial-gradient(
+      ellipse 70% 42% at 12% -8%,
+      rgba(196, 165, 116, 0.045),
+      transparent 52%
+    ),
+    linear-gradient(180deg, #0c0c0e 0%, #0a0a0b 45%, #080809 100%);
+  background-attachment: fixed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(196, 165, 116, 0.35);
+  color: var(--aurum-text);
+}
+
+@keyframes aurum-core-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.72;
+    filter: brightness(1.25);
+  }
+}
+
+.aurum-core-pulse {
+  animation: aurum-core-pulse 1.6s ease-in-out infinite;
+}

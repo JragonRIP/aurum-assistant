@@ -1,0 +1,9 @@
+{
+  "project_id": "aurum",
+  "api": {
+    "enabled": true
+  },
+  "db": {
+    "major_version": 15
+  }
+}

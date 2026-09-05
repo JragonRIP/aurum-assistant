@@ -1,0 +1,770 @@
+:root {
+  --aurum-bg: #0a0a0b;
+  --aurum-surface: #121214;
+  --aurum-graphite: #1a1a1d;
+  --aurum-charcoal: #222226;
+  --aurum-elevated: #2a2a2f;
+  --aurum-border: rgba(255, 255, 255, 0.08);
+  --aurum-border-strong: rgba(255, 255, 255, 0.14);
+  --aurum-gold: #c4a574;
+  --aurum-gold-soft: rgba(196, 165, 116, 0.12);
+  --aurum-gold-bright: #d8c09a;
+  --aurum-text: #f2efe9;
+  --aurum-text-muted: #9a9690;
+  --aurum-text-dim: #6b6862;
+  --aurum-danger: #c45c5c;
+  --aurum-success: #6a9b7a;
+  --aurum-warning: #c4a04a;
+  --aurum-radius-sm: 4px;
+  --aurum-radius-md: 8px;
+  --aurum-radius-lg: 12px;
+  --aurum-shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --aurum-shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --aurum-illuminate: 0 0 0 1px rgba(196, 165, 116, 0.22),
+    0 0 28px rgba(196, 165, 116, 0.06);
+  --aurum-font-display: "Fraunces", "Georgia", serif;
+  --aurum-font-body: "Sora", "Segoe UI", sans-serif;
+  --aurum-font-mono: "IBM Plex Mono", "Consolas", monospace;
+  --aurum-duration: 180ms;
+  --aurum-duration-slow: 240ms;
+  --aurum-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.aurum-surface {
+  background: var(--aurum-surface);
+  border: 1px solid var(--aurum-border);
+  border-radius: var(--aurum-radius-md);
+}
+
+.aurum-gold-accent {
+  color: var(--aurum-gold);
+}
+
+.aurum-focus-ring:focus-visible {
+  outline: 2px solid var(--aurum-gold);
+  outline-offset: 2px;
+}
+
+.aurum-illuminate {
+  box-shadow: var(--aurum-illuminate);
+}
+
+.aurum-transition {
+  transition:
+    background var(--aurum-duration) var(--aurum-ease),
+    color var(--aurum-duration) var(--aurum-ease),
+    border-color var(--aurum-duration) var(--aurum-ease),
+    opacity var(--aurum-duration) var(--aurum-ease),
+    box-shadow var(--aurum-duration) var(--aurum-ease),
+    transform var(--aurum-duration) var(--aurum-ease);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Aurum Core visual — layered instrument. Transforms/opacity only.            */
+/* -------------------------------------------------------------------------- */
+
+.aurum-presence {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.aurum-presence[data-size="sm"] {
+  width: 32px;
+  height: 32px;
+}
+
+.aurum-presence[data-size="md"] {
+  width: 88px;
+  height: 88px;
+}
+
+.aurum-presence[data-size="lg"] {
+  width: 180px;
+  height: 180px;
+}
+
+.aurum-presence[data-size="xl"] {
+  width: clamp(170px, 32vw, 320px);
+  height: clamp(170px, 32vw, 320px);
+  transition: width 0.7s var(--aurum-ease), height 0.7s var(--aurum-ease);
+}
+
+.aurum-core-stage[data-core-layout="active"] .aurum-presence[data-size="xl"] {
+  width: clamp(180px, 24vw, 248px);
+  height: clamp(180px, 24vw, 248px);
+}
+
+@media (max-width: 640px) {
+  .aurum-core-stage[data-core-layout="active"] .aurum-presence[data-size="xl"] {
+    width: clamp(156px, 42vw, 200px);
+    height: clamp(156px, 42vw, 200px);
+  }
+}
+
+.aurum-presence-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.acv-layer,
+.acv-overlay,
+.acv-core-wrap,
+.acv-error-ring,
+.acv-pulse-ring,
+.acv-thinking,
+.acv-acting {
+  transform-box: view-box;
+  transform-origin: 200px 200px;
+}
+
+.acv-stroke-gold {
+  stroke: #c4a574;
+}
+
+.acv-stroke-gold-soft {
+  stroke: #d4be96;
+  opacity: 0.72;
+}
+
+.acv-stroke-gold-dim {
+  stroke: rgba(196, 165, 116, 0.38);
+}
+
+.acv-stroke-steel {
+  stroke: #3a3a40;
+}
+
+.acv-stroke-steel-bright {
+  stroke: #5a5a62;
+}
+
+.acv-stroke-tick {
+  stroke: rgba(210, 190, 150, 0.42);
+}
+
+.acv-stroke-micro {
+  stroke: rgba(196, 165, 116, 0.28);
+}
+
+.acv-stroke-track {
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+.acv-fill-steel {
+  fill: #4a4a52;
+}
+
+.acv-fill-gold-soft {
+  fill: #c4a574;
+  opacity: 0.55;
+}
+
+.acv-struct-dark {
+  stroke: #2c2c32;
+}
+
+.acv-struct-mid {
+  stroke: #3a3a42;
+}
+
+.acv-struct-bright {
+  stroke: #4e4e58;
+}
+
+.acv-cross {
+  stroke: rgba(242, 239, 233, 0.07);
+  stroke-width: 0.45;
+}
+
+.acv-indicator {
+  fill: #c4a574;
+  opacity: 0.35;
+}
+
+.acv-error-dot {
+  fill: #c45c5c;
+  opacity: 0;
+}
+
+.acv-overlay {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.75s var(--aurum-ease);
+}
+
+.acv-ticks {
+  animation: acv-spin 120s linear infinite;
+}
+
+.acv-micro {
+  animation: acv-spin-reverse 84s linear infinite;
+}
+
+.acv-primary {
+  animation: acv-spin 240s linear infinite;
+}
+
+.acv-secondary {
+  animation: acv-spin-reverse 96s linear infinite;
+}
+
+.acv-inner {
+  animation: acv-calibrate 12s ease-in-out infinite;
+}
+
+.acv-core-wrap {
+  animation: acv-breathe 4.2s var(--aurum-ease) infinite;
+}
+
+.acv-glow {
+  animation: acv-halo 4.2s var(--aurum-ease) infinite;
+}
+
+.acv-indicator-0 {
+  animation: acv-lamp 6.4s ease-in-out infinite;
+}
+.acv-indicator-1 {
+  animation: acv-lamp 7.1s ease-in-out 1.2s infinite;
+}
+.acv-indicator-2 {
+  animation: acv-lamp 5.6s ease-in-out 2.1s infinite;
+}
+.acv-indicator-3 {
+  animation: acv-lamp 8s ease-in-out 0.4s infinite;
+}
+.acv-indicator-4 {
+  animation: acv-lamp 6.8s ease-in-out 3.3s infinite;
+}
+.acv-indicator-5 {
+  animation: acv-lamp 7.4s ease-in-out 1.8s infinite;
+}
+
+.acv-thinking {
+  animation: acv-spin 18s linear infinite;
+}
+
+.acv-acting {
+  animation: acv-spin 2.8s linear infinite;
+}
+
+.acv-pulse-ring {
+  transform-origin: 200px 200px;
+  transform-box: view-box;
+}
+
+.aurum-presence[data-state="THINKING"] .acv-thinking,
+.aurum-presence[data-state="LISTENING"] .acv-thinking {
+  opacity: 0.9;
+}
+
+.aurum-presence[data-state="THINKING"] .acv-ticks {
+  animation-duration: 36s;
+}
+
+.aurum-presence[data-state="THINKING"] .acv-micro {
+  animation-duration: 14s;
+}
+
+.aurum-presence[data-state="THINKING"] .acv-primary {
+  animation-duration: 22s;
+}
+
+.aurum-presence[data-state="THINKING"] .acv-core-wrap {
+  animation-duration: 2.6s;
+}
+
+.aurum-presence[data-presentation="thinking"] .acv-stroke-gold {
+  stroke: #d4b888;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-thinking {
+  opacity: 0.28;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-ticks {
+  animation-duration: 96s;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-micro {
+  animation-duration: 48s;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-primary {
+  animation-duration: 72s;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-secondary {
+  animation: acv-calibrate 5.5s ease-in-out infinite;
+}
+
+.aurum-presence[data-presentation="responding"] .acv-core-wrap {
+  animation-duration: 3.6s;
+}
+
+.aurum-presence[data-state="LISTENING"] .acv-secondary {
+  animation: acv-listen 2.8s ease-in-out infinite;
+}
+
+.aurum-presence[data-state="LISTENING"] .acv-core-wrap {
+  animation-duration: 2.2s;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-acting,
+.aurum-presence[data-state="SPEAKING"] .acv-acting {
+  opacity: 1;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-ticks,
+.aurum-presence[data-state="ACTING"] .acv-micro,
+.aurum-presence[data-state="ACTING"] .acv-primary {
+  animation-duration: 48s;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-success-pulse {
+  opacity: 1;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-pulse-ring {
+  animation: acv-lock-pulse 1.6s var(--aurum-ease) infinite;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-struct-mass {
+  animation: acv-struct-flash 1.6s var(--aurum-ease) infinite;
+}
+
+.aurum-presence[data-state="ACTING"] .acv-core {
+  filter: brightness(1.18);
+}
+
+.aurum-presence[data-state="SPEAKING"] .acv-core-wrap {
+  animation: acv-speak 1.15s var(--aurum-ease) infinite;
+}
+
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-hold {
+  opacity: 1;
+}
+
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-ticks,
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-micro,
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-primary,
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-secondary,
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-inner {
+  animation-play-state: paused;
+  opacity: 0.72;
+}
+
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-core-wrap {
+  animation-duration: 3.4s;
+}
+
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-indicator-0 {
+  animation: acv-lamp 2.8s ease-in-out infinite;
+  opacity: 1;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-error {
+  opacity: 1;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-error-ring {
+  animation: acv-misalign 2.2s var(--aurum-ease) infinite;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-error-dot {
+  opacity: 0.9;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-stroke-gold,
+.aurum-presence[data-state="ERROR"] .acv-stroke-gold-soft,
+.aurum-presence[data-state="ERROR"] .acv-stroke-gold-dim {
+  stroke: #a45a52;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-stroke-tick,
+.aurum-presence[data-state="ERROR"] .acv-stroke-micro {
+  stroke: rgba(164, 90, 82, 0.42);
+}
+
+.aurum-presence[data-state="ERROR"] .acv-fill-gold-soft,
+.aurum-presence[data-state="ERROR"] .acv-indicator {
+  fill: #a45a52;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-ticks,
+.aurum-presence[data-state="ERROR"] .acv-micro,
+.aurum-presence[data-state="ERROR"] .acv-primary,
+.aurum-presence[data-state="ERROR"] .acv-secondary,
+.aurum-presence[data-state="ERROR"] .acv-inner {
+  animation-play-state: paused;
+}
+
+.aurum-presence[data-state="ERROR"] .acv-thinking,
+.aurum-presence[data-state="ERROR"] .acv-acting {
+  opacity: 0;
+}
+
+.aurum-presence[data-state="OFFLINE"] .aurum-presence-svg {
+  opacity: 0.42;
+}
+
+.aurum-presence[data-state="OFFLINE"] .acv-ticks,
+.aurum-presence[data-state="OFFLINE"] .acv-micro,
+.aurum-presence[data-state="OFFLINE"] .acv-primary,
+.aurum-presence[data-state="OFFLINE"] .acv-secondary,
+.aurum-presence[data-state="OFFLINE"] .acv-inner,
+.aurum-presence[data-state="OFFLINE"] .acv-core-wrap,
+.aurum-presence[data-state="OFFLINE"] .acv-glow,
+.aurum-presence[data-state="OFFLINE"] .acv-indicator {
+  animation: none;
+}
+
+.aurum-presence[data-state="OFFLINE"] .acv-core,
+.aurum-presence[data-state="OFFLINE"] .acv-indicator,
+.aurum-presence[data-state="OFFLINE"] .acv-fill-gold-soft {
+  fill: #4a4a4e;
+  opacity: 0.4;
+}
+
+.aurum-presence[data-state="OFFLINE"] .acv-stroke-gold,
+.aurum-presence[data-state="OFFLINE"] .acv-stroke-gold-soft,
+.aurum-presence[data-state="OFFLINE"] .acv-stroke-gold-dim,
+.aurum-presence[data-state="OFFLINE"] .acv-stroke-tick,
+.aurum-presence[data-state="OFFLINE"] .acv-stroke-micro {
+  stroke: #3e3e44;
+}
+
+.aurum-presence[data-state="OFFLINE"] .acv-struct-dark,
+.aurum-presence[data-state="OFFLINE"] .acv-struct-mid,
+.aurum-presence[data-state="OFFLINE"] .acv-struct-bright {
+  stroke: #242428;
+}
+
+.aurum-presence[data-state="OFFLINE"] .acv-glow {
+  opacity: 0.12;
+}
+
+@keyframes acv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes acv-spin-reverse {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes acv-calibrate {
+  0%,
+  100% {
+    transform: rotate(-1.5deg);
+  }
+  50% {
+    transform: rotate(1.6deg);
+  }
+}
+
+@keyframes acv-breathe {
+  0%,
+  100% {
+    opacity: 0.82;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes acv-halo {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes acv-lamp {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes acv-listen {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.018);
+  }
+}
+
+@keyframes acv-speak {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes acv-lock-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes acv-struct-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 0.72;
+  }
+}
+
+@keyframes acv-misalign {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35% {
+    transform: rotate(-3.2deg);
+  }
+  60% {
+    transform: rotate(2.1deg);
+  }
+}
+
+@keyframes acv-stream-tick {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.055);
+  }
+}
+
+.aurum-presence-stage[data-pulse="stream"] .acv-core-wrap {
+  animation: acv-stream-tick 0.32s var(--aurum-ease);
+}
+
+.aurum-presence-stage[data-pulse="stream"] .acv-secondary {
+  opacity: 1;
+}
+
+.aurum-presence-stage[data-pulse="success"] .acv-success-pulse,
+.aurum-presence[data-presentation="success"] .acv-success-pulse {
+  opacity: 1;
+}
+
+.aurum-presence-stage[data-pulse="success"] .acv-pulse-ring,
+.aurum-presence[data-presentation="success"] .acv-pulse-ring {
+  animation: acv-lock-pulse 0.72s var(--aurum-ease) 1;
+}
+
+.aurum-core-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.aurum-core-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  transition: padding 0.7s var(--aurum-ease);
+}
+
+.aurum-core-stage[data-core-layout="idle"] .aurum-core-scroll {
+  padding-top: 3rem;
+}
+
+.aurum-core-stage[data-core-layout="active"] .aurum-core-scroll {
+  padding-top: 1.25rem;
+}
+
+.aurum-core-greeting,
+.aurum-core-health {
+  overflow: hidden;
+  transition:
+    opacity 0.55s var(--aurum-ease),
+    max-height 0.7s var(--aurum-ease),
+    margin 0.55s var(--aurum-ease);
+}
+
+.aurum-core-greeting {
+  max-height: 8rem;
+}
+
+.aurum-core-health {
+  max-height: 5rem;
+}
+
+.aurum-core-stage[data-core-layout="active"] .aurum-core-greeting,
+.aurum-core-stage[data-core-layout="active"] .aurum-core-health {
+  max-height: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.aurum-core-status {
+  min-height: 1.15rem;
+  margin-top: 1.25rem;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--aurum-gold);
+}
+
+.aurum-core-stage[data-core-layout="idle"] .aurum-core-status[data-empty="true"] {
+  color: var(--aurum-gold);
+}
+
+.aurum-core-query {
+  max-width: 28rem;
+  margin-top: 1rem;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--aurum-text-muted);
+}
+
+@keyframes aurum-action-dots {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@keyframes aurum-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.aurum-panel-enter {
+  animation: aurum-panel-in var(--aurum-duration-slow) var(--aurum-ease);
+}
+
+.aurum-action-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--aurum-gold);
+  animation: aurum-action-dots 1.2s ease-in-out infinite;
+}
+
+.aurum-action-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.aurum-action-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.aurum-drawer {
+  transition: transform var(--aurum-duration-slow) var(--aurum-ease),
+    opacity var(--aurum-duration) var(--aurum-ease);
+}
+
+.aurum-command:focus-within {
+  border-color: rgba(196, 165, 116, 0.45);
+}
+
+.aurum-kicker {
+  font-family: var(--aurum-font-body);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--aurum-gold);
+}
+
+.aurum-native-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--aurum-border);
+  border-bottom: 1px solid var(--aurum-border);
+  color: var(--aurum-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acv-ticks,
+  .acv-micro,
+  .acv-primary,
+  .acv-secondary,
+  .acv-inner,
+  .acv-core-wrap,
+  .acv-glow,
+  .acv-thinking,
+  .acv-acting,
+  .acv-pulse-ring,
+  .acv-error-ring,
+  .acv-indicator,
+  .acv-struct-mass,
+  .aurum-action-dot,
+  .aurum-panel-enter,
+  .aurum-drawer,
+  .aurum-transition,
+  .aurum-presence-stage[data-pulse="stream"] .acv-core-wrap,
+  .aurum-presence-stage[data-pulse="success"] .acv-pulse-ring {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .acv-overlay {
+    transition: none !important;
+  }
+
+  .acv-core-wrap,
+  .acv-glow,
+  .acv-ticks,
+  .acv-micro {
+    opacity: 1;
+    transform: none;
+  }
+}

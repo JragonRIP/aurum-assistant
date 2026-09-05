@@ -1,0 +1,26 @@
+{
+  "name": "aurum",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aurum — AI Executive Assistant / Personal Operating System",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@aurum/web",
+    "dev:web": "npm run dev --workspace=@aurum/web",
+    "dev:desktop": "npm run dev --workspace=@aurum/desktop",
+    "build": "npm run build --workspaces --if-present",
+    "build:web": "npm run build --workspace=@aurum/web",
+    "build:desktop": "npm run build --workspace=@aurum/desktop",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.11.0"
+}
