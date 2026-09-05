@@ -1,8 +1,17 @@
 export {};
 
+type UpdaterState = {
+  status: string;
+  currentVersion: string;
+  latestVersion: string | null;
+  progressPercent: number | null;
+  errorMessage: string | null;
+  enabled: boolean;
+};
+
 declare global {
   interface Window {
-    aurumDesktop: {
+    aurumDesktop?: {
       getInfo: () => Promise<{
         product: string;
         version: string;
@@ -32,8 +41,24 @@ declare global {
       submitOverlayCommand: (
         text: string,
       ) => Promise<{ ok: boolean; error?: string }>;
+      startOverlayChat?: (text: string) => Promise<{ id: string }>;
+      cancelOverlayChat?: (id: string) => Promise<{ ok: boolean }>;
+      setOverlayExpanded?: (expanded: boolean) => Promise<{ ok: boolean }>;
+      openInAurum?: () => Promise<{ ok: boolean }>;
+      getUpdaterState?: () => Promise<UpdaterState>;
+      checkForUpdates?: () => Promise<UpdaterState>;
+      installUpdate?: () => Promise<{ ok: boolean; error?: string }>;
+      onUpdaterState?: (callback: (state: UpdaterState) => void) => () => void;
       onOverlayShown: (
         callback: (state: { paired: boolean; online: boolean }) => void,
+      ) => () => void;
+      onOverlayChatEvent?: (
+        callback: (payload: {
+          id: string;
+          event?: unknown;
+          done?: boolean;
+          error?: string;
+        }) => void,
       ) => () => void;
     };
   }

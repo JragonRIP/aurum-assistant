@@ -295,4 +295,395 @@ export class SpotifyAdapter {
     );
     await assertOk(res);
   }
+
+  async playContext(opts: {
+    contextUri: string;
+    deviceId?: string;
+  }): Promise<void> {
+    const qs = opts.deviceId
+      ? `?device_id=${encodeURIComponent(opts.deviceId)}`
+      : "";
+    const res = await spotifyFetch(this.accessToken, `/me/player/play${qs}`, {
+      method: "PUT",
+      body: JSON.stringify({ context_uri: opts.contextUri }),
+    });
+    await assertOk(res);
+  }
+
+  async getQueue(): Promise<{
+    currentlyPlaying: SpotifyTrackHit | null;
+    queue: SpotifyTrackHit[];
+  }> {
+    const res = await spotifyFetch(this.accessToken, "/me/player/queue");
+    await assertOk(res);
+    const json = (await res.json()) as {
+      currently_playing?: {
+        id?: string;
+        uri?: string;
+        name?: string;
+        duration_ms?: number;
+        artists?: Array<{ name: string }>;
+        album?: { name: string };
+      } | null;
+      queue?: Array<{
+        id: string;
+        uri: string;
+        name: string;
+        duration_ms: number;
+        artists?: Array<{ name: string }>;
+        album?: { name: string };
+      }>;
+    };
+    const mapTrack = (t: {
+      id?: string;
+      uri?: string;
+      name?: string;
+      duration_ms?: number;
+      artists?: Array<{ name: string }>;
+      album?: { name: string };
+    } | null | undefined): SpotifyTrackHit | null => {
+      if (!t?.id || !t.uri || !t.name) return null;
+      return {
+        id: t.id,
+        uri: t.uri,
+        name: t.name,
+        artists: (t.artists ?? []).map((a) => a.name),
+        album: t.album?.name ?? "",
+        durationMs: t.duration_ms ?? 0,
+      };
+    };
+    return {
+      currentlyPlaying: mapTrack(json.currently_playing),
+      queue: (json.queue ?? [])
+        .map((t) => mapTrack(t))
+        .filter((t): t is SpotifyTrackHit => Boolean(t)),
+    };
+  }
+
+  async searchAlbums(opts: {
+    query: string;
+    limit?: number;
+  }): Promise<Array<{ id: string; uri: string; name: string; artists: string[] }>> {
+    const limit = Math.min(Math.max(opts.limit ?? 5, 1), 20);
+    const params = new URLSearchParams({
+      q: opts.query,
+      type: "album",
+      limit: String(limit),
+    });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/search?${params.toString()}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      albums?: {
+        items?: Array<{
+          id: string;
+          uri: string;
+          name: string;
+          artists?: Array<{ name: string }>;
+        }>;
+      };
+    };
+    return (json.albums?.items ?? []).map((a) => ({
+      id: a.id,
+      uri: a.uri,
+      name: a.name,
+      artists: (a.artists ?? []).map((x) => x.name),
+    }));
+  }
+
+  async searchArtists(opts: {
+    query: string;
+    limit?: number;
+  }): Promise<Array<{ id: string; uri: string; name: string }>> {
+    const limit = Math.min(Math.max(opts.limit ?? 5, 1), 20);
+    const params = new URLSearchParams({
+      q: opts.query,
+      type: "artist",
+      limit: String(limit),
+    });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/search?${params.toString()}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      artists?: {
+        items?: Array<{ id: string; uri: string; name: string }>;
+      };
+    };
+    return (json.artists?.items ?? []).map((a) => ({
+      id: a.id,
+      uri: a.uri,
+      name: a.name,
+    }));
+  }
+
+  async setShuffle(enabled: boolean, deviceId?: string): Promise<void> {
+    const params = new URLSearchParams({ state: String(enabled) });
+    if (deviceId) params.set("device_id", deviceId);
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/player/shuffle?${params.toString()}`,
+      { method: "PUT" },
+    );
+    await assertOk(res);
+  }
+
+  async setRepeat(
+    state: "off" | "track" | "context",
+    deviceId?: string,
+  ): Promise<void> {
+    const params = new URLSearchParams({ state });
+    if (deviceId) params.set("device_id", deviceId);
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/player/repeat?${params.toString()}`,
+      { method: "PUT" },
+    );
+    await assertOk(res);
+  }
+
+  async transferPlayback(deviceId: string, play?: boolean): Promise<void> {
+    const res = await spotifyFetch(this.accessToken, "/me/player", {
+      method: "PUT",
+      body: JSON.stringify({
+        device_ids: [deviceId],
+        play: play ?? false,
+      }),
+    });
+    await assertOk(res);
+  }
+
+  async addToQueue(uri: string, deviceId?: string): Promise<void> {
+    const params = new URLSearchParams({ uri });
+    if (deviceId) params.set("device_id", deviceId);
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/player/queue?${params.toString()}`,
+      { method: "POST" },
+    );
+    await assertOk(res);
+  }
+
+  async getUserPlaylists(limit = 20): Promise<
+    Array<{ id: string; uri: string; name: string; public: boolean | null }>
+  > {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(limit, 1), 50)),
+    });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/playlists?${params.toString()}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      items?: Array<{
+        id: string;
+        uri: string;
+        name: string;
+        public: boolean | null;
+      }>;
+    };
+    return json.items ?? [];
+  }
+
+  async getPlaylist(playlistId: string): Promise<{
+    id: string;
+    uri: string;
+    name: string;
+    description: string | null;
+    public: boolean | null;
+    tracksTotal: number;
+  }> {
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/playlists/${encodeURIComponent(playlistId)}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      id: string;
+      uri: string;
+      name: string;
+      description: string | null;
+      public: boolean | null;
+      tracks?: { total?: number };
+    };
+    return {
+      id: json.id,
+      uri: json.uri,
+      name: json.name,
+      description: json.description,
+      public: json.public,
+      tracksTotal: json.tracks?.total ?? 0,
+    };
+  }
+
+  async getPlaylistItems(
+    playlistId: string,
+    limit = 50,
+  ): Promise<SpotifyTrackHit[]> {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(limit, 1), 100)),
+      fields: "items(track(id,uri,name,duration_ms,artists(name),album(name)))",
+    });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/playlists/${encodeURIComponent(playlistId)}/tracks?${params.toString()}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      items?: Array<{
+        track?: {
+          id?: string;
+          uri?: string;
+          name?: string;
+          duration_ms?: number;
+          artists?: Array<{ name: string }>;
+          album?: { name: string };
+        } | null;
+      }>;
+    };
+    const out: SpotifyTrackHit[] = [];
+    for (const item of json.items ?? []) {
+      const t = item.track;
+      if (!t?.id || !t.uri || !t.name) continue;
+      out.push({
+        id: t.id,
+        uri: t.uri,
+        name: t.name,
+        artists: (t.artists ?? []).map((a) => a.name),
+        album: t.album?.name ?? "",
+        durationMs: t.duration_ms ?? 0,
+      });
+    }
+    return out;
+  }
+
+  async createPlaylist(opts: {
+    userId: string;
+    name: string;
+    description?: string;
+    isPublic?: boolean;
+  }): Promise<{ id: string; uri: string; name: string }> {
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/users/${encodeURIComponent(opts.userId)}/playlists`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: opts.name,
+          description: opts.description ?? "",
+          public: opts.isPublic ?? false,
+        }),
+      },
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      id: string;
+      uri: string;
+      name: string;
+    };
+    return json;
+  }
+
+  async changePlaylistDetails(
+    playlistId: string,
+    patch: { name?: string; description?: string; public?: boolean },
+  ): Promise<void> {
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/playlists/${encodeURIComponent(playlistId)}`,
+      { method: "PUT", body: JSON.stringify(patch) },
+    );
+    await assertOk(res);
+  }
+
+  async addPlaylistItems(playlistId: string, uris: string[]): Promise<void> {
+    // Spotify accepts max 100 uris per request
+    for (let i = 0; i < uris.length; i += 100) {
+      const chunk = uris.slice(i, i + 100);
+      const res = await spotifyFetch(
+        this.accessToken,
+        `/playlists/${encodeURIComponent(playlistId)}/tracks`,
+        { method: "POST", body: JSON.stringify({ uris: chunk }) },
+      );
+      await assertOk(res);
+    }
+  }
+
+  async removePlaylistItems(playlistId: string, uris: string[]): Promise<void> {
+    for (let i = 0; i < uris.length; i += 100) {
+      const chunk = uris.slice(i, i + 100);
+      const res = await spotifyFetch(
+        this.accessToken,
+        `/playlists/${encodeURIComponent(playlistId)}/tracks`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({
+            tracks: chunk.map((uri) => ({ uri })),
+          }),
+        },
+      );
+      await assertOk(res);
+    }
+  }
+
+  async reorderPlaylistItems(opts: {
+    playlistId: string;
+    rangeStart: number;
+    insertBefore: number;
+    rangeLength?: number;
+  }): Promise<void> {
+    const body: Record<string, number> = {
+      range_start: opts.rangeStart,
+      insert_before: opts.insertBefore,
+    };
+    if (opts.rangeLength != null) body.range_length = opts.rangeLength;
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/playlists/${encodeURIComponent(opts.playlistId)}/tracks`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+    await assertOk(res);
+  }
+
+  async saveTracks(ids: string[]): Promise<void> {
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/tracks?${params.toString()}`,
+      { method: "PUT" },
+    );
+    await assertOk(res);
+  }
+
+  async removeSavedTracks(ids: string[]): Promise<void> {
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/tracks?${params.toString()}`,
+      { method: "DELETE" },
+    );
+    await assertOk(res);
+  }
+
+  async checkSavedTracks(ids: string[]): Promise<boolean[]> {
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/me/tracks/contains?${params.toString()}`,
+    );
+    await assertOk(res);
+    return (await res.json()) as boolean[];
+  }
+
+  async getCurrentUserId(): Promise<string> {
+    const res = await spotifyFetch(this.accessToken, "/me");
+    await assertOk(res);
+    const json = (await res.json()) as { id?: string };
+    if (!json.id) throw new SpotifyApiError("NOT_FOUND", "Spotify user not found.");
+    return json.id;
+  }
 }

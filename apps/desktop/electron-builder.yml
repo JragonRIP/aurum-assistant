@@ -1,0 +1,53 @@
+appId: com.aurum.assistant
+productName: Aurum
+copyright: Copyright © Aurum
+executableName: Aurum
+
+# Staged by scripts/stage-pack.mjs (avoids .gitignore excluding dist/)
+directories:
+  app: app-dist
+  output: release
+  buildResources: build
+
+files:
+  - "**/*"
+
+extraMetadata:
+  name: aurum
+  main: dist/main/index.js
+
+asar: true
+npmRebuild: false
+electronVersion: 35.7.5
+
+# Public GitHub Releases — installed app needs no GH_TOKEN to download updates.
+publish:
+  provider: github
+  owner: JragonRIP
+  repo: aurum-assistant
+  releaseType: release
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Aurum-Setup-${version}.exe
+  # Private unsigned build: skip winCodeSign rcedit (avoids Windows symlink privilege errors).
+  signAndEditExecutable: false
+  # No Aurum .ico in the repo yet — Electron default icon until brand assets land.
+  # Place build/icon.ico when available (installer, exe, Start Menu, uninstall).
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Aurum
+  uninstallDisplayName: Aurum
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+
+forceCodeSigning: false

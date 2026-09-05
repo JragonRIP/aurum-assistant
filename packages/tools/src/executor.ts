@@ -86,9 +86,35 @@ export function resolveToolActivityLabel(
   if (toolName === "spotify_resume") return "Resuming Spotify";
   if (toolName === "spotify_next") return "Skipping track";
   if (toolName === "spotify_previous") return "Previous track";
-  if (toolName === "spotify_set_volume") return "Setting Spotify volume";
+  if (toolName === "spotify_set_volume") {
+    const p = typeof args.percent === "number" ? args.percent : null;
+    return p != null ? `Setting Spotify volume · ${p}%` : "Setting Spotify volume";
+  }
   if (toolName === "spotify_get_playback_state") return "Checking playback";
   if (toolName === "get_connected_devices") return "Listing devices";
+  if (toolName === "set_system_volume") {
+    const p = typeof args.percent === "number" ? args.percent : null;
+    return p != null ? `Setting volume · ${p}%` : "Setting volume";
+  }
+  if (toolName === "mute_system_audio") return "Muting audio";
+  if (toolName === "unmute_system_audio") return "Unmuting audio";
+  if (toolName === "set_audio_output_device") return "Switching audio";
+  if (toolName === "spotify_create_playlist") {
+    const n = typeof args.name === "string" ? args.name.trim() : "";
+    return n ? `Creating playlist · ${n}` : "Creating playlist";
+  }
+  if (toolName === "spotify_add_playlist_items") {
+    const refs = Array.isArray(args.trackReferences) ? args.trackReferences : [];
+    return refs.length ? `Adding ${refs.length} tracks` : "Adding playlist tracks";
+  }
+  if (toolName === "spotify_play_playlist" || toolName === "spotify_play_album") {
+    return toolName === "spotify_play_playlist" ? "Playing playlist" : "Playing album";
+  }
+  if (toolName === "spotify_set_shuffle") return "Setting shuffle";
+  if (toolName === "lock_pc") return "Locking PC";
+  if (toolName === "sleep_pc") return "Sleeping PC";
+  if (toolName === "shutdown_pc") return "Shutting down PC";
+  if (toolName === "restart_pc") return "Restarting PC";
   return fallback;
 }
 
@@ -196,7 +222,7 @@ export async function executeToolCall(options: {
     };
   }
 
-  if (decision.mode === "confirm") {
+  if (decision.mode === "confirm" && !ctx.skipConfirmation) {
     const approval = await ctx.data.approvals.createPending({
       toolId: tool.id,
       actionLabel: tool.activityLabel,

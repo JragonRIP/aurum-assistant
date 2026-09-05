@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import { DeviceBridge } from "./bridge";
+import { getAurumWebUrl, loadDesktopEnv } from "./config";
 import {
   clearDeviceCredential,
   loadDeviceCredential,
@@ -20,19 +21,29 @@ import {
   type DeviceCredential,
 } from "./credentials";
 import { OverlayChatBridge } from "./overlay-chat";
+import {
+  AURUM_AUTOSTART_FLAG,
+  mainWindowEntryUrl,
+  resolveSecondInstanceAction,
+  resolveStartupWindowAction,
+} from "./launch-behavior";
+import { DesktopUpdater } from "./updater";
+import type { UpdaterPublicState } from "./updater-state";
+import { buildTrayUpdateMenu } from "./updater-tray";
 
 /**
- * Aurum Desktop — Phase 4.1 companion.
- * Overlay is a first-class client (bottom-center). Agent runs via device auth.
+ * Aurum Desktop — Phase 4.3 companion (device bridge + auto-updater).
+ * Manual launch → full main window; Ctrl+Space → overlay only.
  */
+
+loadDesktopEnv();
 
 const PRODUCT = {
   name: "Aurum",
-  version: "0.4.1",
+  version: "0.2.1",
 } as const;
 
 const DEFAULT_DESKTOP_HOTKEY = "CommandOrControl+Space";
-const WEB_URL = process.env.AURUM_WEB_URL ?? "http://localhost:3000";
 
 const OVERLAY_IDLE = { width: 700, height: 140 } as const;
 const OVERLAY_EXPANDED = { width: 700, height: 420 } as const;
@@ -44,10 +55,25 @@ let tray: Tray | null = null;
 let bridge: DeviceBridge | null = null;
 let overlayChat: OverlayChatBridge | null = null;
 let overlayExpanded = false;
+let isQuitting = false;
+let desktopUpdater: DesktopUpdater | null = null;
 
 const OpenExternalSchema = z.object({
   url: z.string().url(),
 });
+
+/** Single-instance: second Start Menu / Aurum.exe launch opens the full app. */
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!app.isReady()) return;
+    if (resolveSecondInstanceAction() === "show-main") {
+      showMainWindow();
+    }
+  });
+}
 
 function logDevice(event: string, extra?: Record<string, unknown>): void {
   console.info("[aurum:device]", { event, ...extra });
@@ -94,20 +120,32 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  void win.loadURL(`${WEB_URL}/core`);
+  void win.loadURL(mainWindowEntryUrl(getAurumWebUrl()));
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: "deny" };
   });
 
   win.on("close", (e) => {
-    if (tray && !(app as unknown as { isQuitting?: boolean }).isQuitting) {
+    if (tray && !isQuitting) {
       e.preventDefault();
       win.hide();
     }
   });
 
   return win;
+}
+
+/** Full Aurum application (not the Ctrl+Space overlay). */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow();
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function activeDisplay() {
@@ -204,6 +242,15 @@ function registerHotkey(): void {
   }
 }
 
+function broadcastUpdaterState(state: UpdaterPublicState): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("aurum:updater-state", state);
+    }
+  }
+  rebuildTrayMenu();
+}
+
 function createTray(): void {
   const icon = nativeImage.createEmpty();
   tray = new Tray(
@@ -214,18 +261,39 @@ function createTray(): void {
       : icon,
   );
   tray.setToolTip("Aurum");
+  rebuildTrayMenu();
+  tray.on("double-click", () => showMainWindow());
+}
+
+function rebuildTrayMenu(): void {
+  if (!tray) return;
+  const trayUpdate = buildTrayUpdateMenu(desktopUpdater?.getState() ?? null);
+  const updateItems: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: trayUpdate.primaryLabel,
+      click: () => {
+        if (trayUpdate.primaryAction === "install") {
+          desktopUpdater?.install();
+        } else {
+          void desktopUpdater?.checkForUpdates({ silent: false });
+        }
+      },
+    },
+    {
+      label: trayUpdate.statusLabel,
+      enabled: false,
+    },
+  ];
+
   const menu = Menu.buildFromTemplate([
     {
       label: "Open Aurum",
-      click: () => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
-          mainWindow = createMainWindow();
-        }
-        mainWindow.show();
-        mainWindow.focus();
-      },
+      click: () => showMainWindow(),
     },
     { label: "Show Overlay", click: () => showOverlay() },
+    { type: "separator" },
+    ...updateItems,
+    { type: "separator" },
     {
       label: "Device Status",
       click: () => {
@@ -243,13 +311,15 @@ function createTray(): void {
       },
     },
     {
-      label: "Launch Aurum when Windows starts",
+      label: "Launch at Startup",
       type: "checkbox",
       checked: app.getLoginItemSettings().openAtLogin,
       click: (item) => {
         app.setLoginItemSettings({
           openAtLogin: item.checked,
           path: process.execPath,
+          // Quiet tray start on login — not a normal manual launch.
+          args: item.checked ? [AURUM_AUTOSTART_FLAG] : [],
         });
       },
     },
@@ -257,26 +327,72 @@ function createTray(): void {
     {
       label: "Quit",
       click: () => {
-        (app as unknown as { isQuitting?: boolean }).isQuitting = true;
-        bridge?.stop();
-        app.quit();
+        quitAurum();
       },
     },
   ]);
   tray.setContextMenu(menu);
-  tray.on("double-click", () => showOverlay());
+}
+
+function quitAurum(): void {
+  isQuitting = true;
+  desktopUpdater?.stop();
+  globalShortcut.unregisterAll();
+  bridge?.stop();
+  bridge = null;
+  overlayChat = null;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.destroy();
+  }
+  app.quit();
 }
 
 function registerIpc(): void {
   ipcMain.handle("aurum:get-info", () => ({
     product: PRODUCT.name,
-    version: PRODUCT.version,
-    phase: 4.1,
+    version: app.getVersion() || PRODUCT.version,
+    phase: 4.3,
     platform: process.platform,
-    webUrl: WEB_URL,
+    webUrl: getAurumWebUrl(),
     paired: Boolean(loadDeviceCredential()),
     online: bridge?.state.online ?? false,
   }));
+
+  ipcMain.handle("aurum:updater-get-state", () => {
+    return (
+      desktopUpdater?.getState() ?? {
+        status: "disabled",
+        currentVersion: app.getVersion() || PRODUCT.version,
+        latestVersion: null,
+        progressPercent: null,
+        errorMessage: null,
+        enabled: false,
+      }
+    );
+  });
+
+  ipcMain.handle("aurum:updater-check", async () => {
+    if (!desktopUpdater) {
+      return {
+        status: "disabled",
+        currentVersion: app.getVersion() || PRODUCT.version,
+        latestVersion: null,
+        progressPercent: null,
+        errorMessage: "Updater not available",
+        enabled: false,
+      };
+    }
+    return desktopUpdater.checkForUpdates({ silent: false });
+  });
+
+  ipcMain.handle("aurum:updater-install", () => {
+    if (!desktopUpdater) return { ok: false, error: "Updater not available" };
+    return desktopUpdater.install();
+  });
 
   ipcMain.handle("aurum:hide-overlay", () => {
     hideOverlay();
@@ -298,13 +414,14 @@ function registerIpc(): void {
     const parsed = z.object({ code: z.string().min(6).max(16) }).safeParse(raw);
     if (!parsed.success) return { ok: false, error: "Invalid code" };
 
+    const configuredUrl = getAurumWebUrl();
     const baseCred: DeviceCredential = loadDeviceCredential() ?? {
       deviceId: "",
       deviceSecret: "",
       deviceName: "",
-      webUrl: WEB_URL,
+      webUrl: configuredUrl,
     };
-    baseCred.webUrl = WEB_URL;
+    baseCred.webUrl = configuredUrl;
 
     bridge?.stop();
     bridge = new DeviceBridge(baseCred, (msg, extra) => logDevice(msg, extra));
@@ -340,7 +457,7 @@ function registerIpc(): void {
     const folder = result.filePaths[0];
     const label = path.basename(folder);
     const res = await fetch(
-      `${cred.webUrl.replace(/\/$/, "")}/api/devices/${cred.deviceId}/roots`,
+      `${getAurumWebUrl()}/api/devices/${cred.deviceId}/roots`,
       {
         method: "POST",
         headers: {
@@ -412,38 +529,67 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("aurum:open-in-aurum", () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      mainWindow = createMainWindow();
-    }
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
     return { ok: true };
   });
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;
+
+  desktopUpdater = new DesktopUpdater(app.getVersion() || PRODUCT.version, {
+    onStateChange: (state) => broadcastUpdaterState(state),
+    beforeQuitAndInstall: () => {
+      isQuitting = true;
+      desktopUpdater?.stop();
+      globalShortcut.unregisterAll();
+      bridge?.stop();
+      bridge = null;
+      overlayChat = null;
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.hide();
+      }
+    },
+  });
+
   registerIpc();
   createTray();
-  // Do not force-show main window — companion lives in tray + overlay
   mainWindow = createMainWindow();
   overlayWindow = createOverlayWindow();
   registerHotkey();
   ensureBridge();
+  desktopUpdater.start();
+
+  const startupAction = resolveStartupWindowAction({
+    argv: process.argv,
+    wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin,
+  });
+  if (startupAction === "show-main") {
+    showMainWindow();
+  }
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createMainWindow();
-    }
+    showMainWindow();
   });
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
+  desktopUpdater?.stop();
+  globalShortcut.unregisterAll();
+  bridge?.stop();
+  bridge = null;
 });
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   bridge?.stop();
+  desktopUpdater?.stop();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin" && !tray) {
+  // Tray companion stays alive on Windows until Quit
+  if (process.platform !== "darwin" && !tray && isQuitting) {
     app.quit();
   }
 });

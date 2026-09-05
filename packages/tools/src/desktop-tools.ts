@@ -277,4 +277,5 @@ export function registerDesktopTools(registry: ToolRegistry): void {
   registry.register(createCopyFileTool());
   registry.register(createMoveFileTool());
   registry.register(createRenameFileTool());
+  // Phase 4.2 system tools registered via registerWindowsSystemTools
 }

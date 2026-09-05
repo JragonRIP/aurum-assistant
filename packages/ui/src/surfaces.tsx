@@ -339,19 +339,72 @@ export function MemorySurface({ connected = false }: MemorySurfaceProps) {
 
 export interface ApprovalSurfaceProps {
   pending?: boolean;
+  approvalId?: string | null;
+  actionLabel?: string | null;
+  busy?: boolean;
+  error?: string | null;
+  done?: string | null;
+  onApprove?: () => void;
+  onReject?: () => void;
 }
 
-export function ApprovalSurface({ pending = false }: ApprovalSurfaceProps) {
+export function ApprovalSurface({
+  pending = false,
+  approvalId = null,
+  actionLabel = null,
+  busy = false,
+  error = null,
+  done = null,
+  onApprove,
+  onReject,
+}: ApprovalSurfaceProps) {
   return (
     <SurfaceFrame
       kicker="Approval"
-      status={pending ? "Waiting" : "Idle"}
+      status={pending && !done ? "Waiting" : done ? "Done" : "Idle"}
       variant="card"
     >
-      <Unavailable
-        label={pending ? "Awaiting confirmation" : "No pending approvals"}
-        detail="Actions that change your system will pause here until you confirm them."
-      />
+      {done ? (
+        <p className="text-[14px] text-[var(--aurum-text)]">{done}</p>
+      ) : (
+        <>
+          <Unavailable
+            label={
+              pending
+                ? actionLabel
+                  ? `Confirm: ${actionLabel}`
+                  : "Awaiting confirmation"
+                : "No pending approvals"
+            }
+            detail="Destructive or sensitive actions pause here until you confirm them. Aurum cannot approve itself."
+          />
+          {pending && approvalId && onApprove && onReject ? (
+            <div className="mt-4 flex gap-3">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onApprove}
+                className="aurum-focus-ring text-[13px] text-[var(--aurum-gold,#c9a227)] disabled:opacity-50"
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onReject}
+                className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)] disabled:opacity-50"
+              >
+                Reject
+              </button>
+            </div>
+          ) : null}
+          {error ? (
+            <p className="mt-2 text-[13px] text-[var(--aurum-danger,#c45)]">
+              {error}
+            </p>
+          ) : null}
+        </>
+      )}
     </SurfaceFrame>
   );
 }

@@ -142,6 +142,12 @@ export function useAurumSession() {
   const [surfaceFiles, setSurfaceFiles] = useState<SurfaceFile[]>([]);
   const [acting, setActing] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(
+    null,
+  );
+  const [pendingApprovalLabel, setPendingApprovalLabel] = useState<
+    string | null
+  >(null);
   const [command, setCommand] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
@@ -496,6 +502,8 @@ export function useAurumSession() {
           if (event.type === "approval_required") {
             setAwaitingApproval(true);
             setActing(false);
+            setPendingApprovalId(event.approvalId);
+            setPendingApprovalLabel(event.display?.label ?? event.tool);
             pushActivity({
               label: "APPROVAL REQUIRED",
               detail: event.display?.label ?? event.tool,
@@ -1003,6 +1011,14 @@ export function useAurumSession() {
     streaming,
     acting,
     awaitingApproval,
+    pendingApprovalId,
+    pendingApprovalLabel,
+    clearPendingApproval: () => {
+      setAwaitingApproval(false);
+      setPendingApprovalId(null);
+      setPendingApprovalLabel(null);
+      setActiveSurface("response");
+    },
     error,
     responseWarning,
     allowFullRetry,

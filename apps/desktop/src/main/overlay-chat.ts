@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getAurumWebUrl } from "./config";
 import type { DeviceCredential } from "./credentials";
 
 export type OverlayChatHandle = { id: string };
@@ -58,8 +59,8 @@ export class OverlayChatBridge {
     return `Bearer ${cred.deviceId}.${cred.deviceSecret}`;
   }
 
-  private base(cred: DeviceCredential): string {
-    return cred.webUrl.replace(/\/$/, "");
+  private base(_cred: DeviceCredential): string {
+    return getAurumWebUrl();
   }
 
   private async ensureConversation(cred: DeviceCredential): Promise<string> {

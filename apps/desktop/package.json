@@ -1,29 +1,42 @@
 {
   "name": "@aurum/desktop",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "private": true,
   "description": "Aurum Windows desktop companion",
+  "author": "Aurum",
   "main": "dist/main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JragonRIP/aurum-assistant.git"
+  },
   "scripts": {
     "dev": "npm run build && electron .",
+    "dev:local": "node scripts/dev-local.mjs",
     "build": "tsc -p tsconfig.json && node scripts/build-renderer.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "start": "electron ."
+    "test": "tsx --test src/main/config-url.test.ts src/main/updater-state.test.ts src/main/launch-behavior.test.ts",
+    "start": "electron .",
+    "pack": "npm run build && node scripts/stage-pack.mjs && electron-builder --win --x64 --config electron-builder.yml --publish never",
+    "dist": "npm run pack",
+    "release": "npm run typecheck && npm run test && npm run build && node scripts/stage-pack.mjs && electron-builder --win --x64 --config electron-builder.yml --publish always"
   },
   "dependencies": {
-    "@aurum/shared": "^0.1.0",
-    "@aurum/ui": "^0.1.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "electron-updater": "^6.3.9",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@aurum/shared": "^0.1.0",
+    "@aurum/ui": "^0.1.0",
     "@types/node": "^22.13.10",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^4.7.0",
-    "electron": "^35.0.1",
+    "electron": "35.7.5",
+    "electron-builder": "^25.1.8",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.23.13",
     "typescript": "^5.8.2",
     "vite": "^6.4.3"
   }

@@ -12,6 +12,10 @@ type IntegrationStatus = {
   connectedAt: string | null;
   lastError: string | null;
   configured: boolean;
+  scopes?: string[];
+  requiredScopes?: string[];
+  missingScopes?: string[];
+  needsScopeUpgrade?: boolean;
 };
 
 export function IntegrationsPanel() {
@@ -95,6 +99,7 @@ export function IntegrationsPanel() {
   const spotify = items.find((i) => i.provider === "spotify");
   const connected = spotify?.status === "connected";
   const reconnect = spotify?.status === "reconnect_required";
+  const needsUpgrade = Boolean(spotify?.needsScopeUpgrade) || reconnect;
 
   return (
     <div className="space-y-3">
@@ -113,37 +118,59 @@ export function IntegrationsPanel() {
               ? "Loading…"
               : connected && spotify?.accountLabel
                 ? spotify.accountLabel
-                : reconnect
-                  ? "Reconnect required"
+                : needsUpgrade
+                  ? "Reconnect to grant playlist & library permissions"
                   : spotify?.configured === false
                     ? "Not configured on server"
                     : "Not connected"}
           </p>
+          {spotify?.scopes && spotify.scopes.length > 0 ? (
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--aurum-text-dim)]">
+              Scopes granted: {spotify.scopes.join(", ")}
+            </p>
+          ) : null}
+          {spotify?.missingScopes && spotify.missingScopes.length > 0 ? (
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--aurum-text-muted)]">
+              Missing: {spotify.missingScopes.join(", ")}
+            </p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <StatusBadge
             label={
               connected
                 ? "Connected"
-                : reconnect
-                  ? "Reconnect"
+                : needsUpgrade
+                  ? "Upgrade permissions"
                   : spotify?.configured === false
                     ? "Unavailable"
                     : "Not connected"
             }
             tone={
-              connected ? "success" : reconnect ? "warning" : "neutral"
+              connected ? "success" : needsUpgrade ? "warning" : "neutral"
             }
           />
-          {connected || reconnect ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void disconnectSpotify()}
-              className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)] hover:text-[var(--aurum-text)] disabled:opacity-50"
-            >
-              Disconnect
-            </button>
+          {connected || needsUpgrade ? (
+            <>
+              {needsUpgrade ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void connectSpotify()}
+                  className="aurum-focus-ring text-[13px] text-[var(--aurum-gold,#c9a227)] disabled:opacity-50"
+                >
+                  Reconnect
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void disconnectSpotify()}
+                className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)] hover:text-[var(--aurum-text)] disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+            </>
           ) : (
             <button
               type="button"

@@ -1,16 +1,32 @@
 import { createHash, randomBytes } from "node:crypto";
 
-/** Least-privilege Spotify scopes for playback control only */
+/** Spotify scopes for playback + library + playlist management */
 export const SPOTIFY_SCOPES = [
   "user-read-playback-state",
   "user-modify-playback-state",
   "user-read-currently-playing",
+  "playlist-read-private",
+  "playlist-modify-private",
+  "playlist-modify-public",
+  "user-library-read",
+  "user-library-modify",
 ] as const;
 
 export type SpotifyScope = (typeof SPOTIFY_SCOPES)[number];
 
 export const SPOTIFY_SCOPES_STRING = SPOTIFY_SCOPES.join(" ");
 
+/** Scopes required by Phase 4.2 that may be missing on older connections */
+export function missingSpotifyScopes(granted: string[] | null | undefined): string[] {
+  const set = new Set((granted ?? []).map((s) => s.trim()).filter(Boolean));
+  return SPOTIFY_SCOPES.filter((s) => !set.has(s));
+}
+
+export function needsSpotifyScopeUpgrade(
+  granted: string[] | null | undefined,
+): boolean {
+  return missingSpotifyScopes(granted).length > 0;
+}
 /**
  * Spotify no longer accepts `localhost` aliases for OAuth redirect URIs.
  * Local development must use 127.0.0.1 — must match Developer Dashboard exactly.

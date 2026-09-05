@@ -23,7 +23,9 @@ release/
 
 # electron
 apps/desktop/dist/
+apps/desktop/app-dist/
 apps/desktop/out/
+apps/desktop/release/
 
 # misc
 .DS_Store

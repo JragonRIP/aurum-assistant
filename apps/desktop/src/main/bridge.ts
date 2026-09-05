@@ -1,4 +1,5 @@
 import os from "node:os";
+import { getAurumWebUrl } from "./config";
 import type { DeviceCredential } from "./credentials";
 import type { ApprovedRoot } from "./windows-tools";
 import { executeDesktopTool } from "./windows-tools";
@@ -38,7 +39,11 @@ export class DeviceBridge {
   }
 
   private url(p: string): string {
-    return `${this.cred.webUrl.replace(/\/$/, "")}${p}`;
+    const base = getAurumWebUrl();
+    if (this.cred.webUrl !== base) {
+      this.cred = { ...this.cred, webUrl: base };
+    }
+    return `${base}${p}`;
   }
 
   async refresh(): Promise<void> {
@@ -210,7 +215,6 @@ export class DeviceBridge {
         deviceId?: string;
         deviceSecret?: string;
         deviceName?: string;
-        webUrl?: string;
       };
       if (!res.ok || !data.deviceId || !data.deviceSecret) {
         return { ok: false, error: data.error ?? "Pairing failed" };
@@ -219,7 +223,9 @@ export class DeviceBridge {
         deviceId: data.deviceId,
         deviceSecret: data.deviceSecret,
         deviceName: data.deviceName ?? "Windows PC",
-        webUrl: data.webUrl ?? this.cred.webUrl,
+        // Always use desktop's authoritative config — not the server's hint
+        // (server NEXT_PUBLIC_APP_URL may still be localhost during local web).
+        webUrl: getAurumWebUrl(),
       };
       return { ok: true };
     } catch (err) {

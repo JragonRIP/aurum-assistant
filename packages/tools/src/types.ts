@@ -74,6 +74,11 @@ export interface ToolExecutionContext {
   ) => Promise<ToolResult>;
   /** Set by executor for the active tool call */
   currentExecutionId?: string;
+  /**
+   * When true, CONFIRM tools execute immediately (authenticated user already approved).
+   * Never set from model output — host-only after approval API.
+   */
+  skipConfirmation?: boolean;
 }
 
 /** Host-provided persistence — never exposed to Gemini */

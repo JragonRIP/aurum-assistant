@@ -20,12 +20,14 @@ import {
   normalizePath,
   sanitizeFileName,
 } from "./security";
+import { windowsSystemExecute } from "./windows-system";
 
 const execFileAsync = promisify(execFile);
 
 export type DeviceToolResult = {
   success: boolean;
   data?: Record<string, unknown>;
+  message?: string;
   error?: { code: string; message: string };
 };
 
@@ -129,11 +131,34 @@ async function runTool(
         String(payload.new_name ?? ""),
         roots,
       );
-    default:
+    case "create_text_file":
+      return createTextFile(payload, roots);
+    case "write_text_file":
+      return writeTextFile(
+        String(payload.path ?? ""),
+        String(payload.content ?? ""),
+        roots,
+      );
+    case "append_text_file":
+      return appendTextFile(
+        String(payload.path ?? ""),
+        String(payload.content ?? ""),
+        roots,
+      );
+    case "duplicate_file":
+      return duplicateFile(String(payload.path ?? ""), roots);
+    case "delete_file":
+      return deleteFile(String(payload.path ?? ""), roots);
+    case "delete_folder":
+      return deleteFolder(String(payload.path ?? ""), roots);
+    default: {
+      const system = await windowsSystemExecute(tool, payload);
+      if (system) return system;
       return {
         success: false,
         error: { code: "UNKNOWN_TOOL", message: "Unknown device tool." },
       };
+    }
   }
 }
 
@@ -640,5 +665,188 @@ async function renameFile(
       message: `Renamed to ${safeName}.`,
       activityLabel: "File renamed",
     },
+  };
+}
+
+async function createTextFile(
+  payload: Record<string, unknown>,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const parent = String(payload.parent_path ?? "");
+  const name = sanitizeFileName(String(payload.name ?? ""));
+  const content = typeof payload.content === "string" ? payload.content : "";
+  if (!name || !isTextReadableExtension(name)) {
+    return {
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Create text files with a safe text extension only.",
+      },
+    };
+  }
+  const parentCheck = assertApprovedPath(parent, rootsPaths(roots));
+  if (!parentCheck.ok) {
+    return {
+      success: false,
+      error: { code: parentCheck.code, message: parentCheck.message },
+    };
+  }
+  const full = path.join(parentCheck.canonical, name);
+  const dest = assertApprovedPath(full, rootsPaths(roots));
+  if (!dest.ok) {
+    return { success: false, error: { code: dest.code, message: dest.message } };
+  }
+  if (fsSync.existsSync(dest.canonical)) {
+    return {
+      success: false,
+      error: { code: "CONFLICT", message: "File already exists." },
+    };
+  }
+  await fs.writeFile(dest.canonical, content, "utf8");
+  return {
+    success: true,
+    data: { path: dest.canonical, activityLabel: "File created" },
+  };
+}
+
+async function writeTextFile(
+  filePath: string,
+  content: string,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const check = assertApprovedPath(filePath, rootsPaths(roots));
+  if (!check.ok) {
+    return { success: false, error: { code: check.code, message: check.message } };
+  }
+  if (!isTextReadableExtension(check.canonical)) {
+    return {
+      success: false,
+      error: { code: "UNSUPPORTED_TYPE", message: "Only text files can be written." },
+    };
+  }
+  if (Buffer.byteLength(content, "utf8") > MAX_READ_FILE_BYTES * 4) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Content too large." },
+    };
+  }
+  await fs.writeFile(check.canonical, content, "utf8");
+  return {
+    success: true,
+    data: { path: check.canonical, activityLabel: "File written" },
+  };
+}
+
+async function appendTextFile(
+  filePath: string,
+  content: string,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const check = assertApprovedPath(filePath, rootsPaths(roots));
+  if (!check.ok) {
+    return { success: false, error: { code: check.code, message: check.message } };
+  }
+  if (!isTextReadableExtension(check.canonical)) {
+    return {
+      success: false,
+      error: { code: "UNSUPPORTED_TYPE", message: "Only text files can be appended." },
+    };
+  }
+  await fs.appendFile(check.canonical, content, "utf8");
+  return {
+    success: true,
+    data: { path: check.canonical, activityLabel: "File appended" },
+  };
+}
+
+async function duplicateFile(
+  filePath: string,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const src = assertApprovedPath(filePath, rootsPaths(roots));
+  if (!src.ok) return { success: false, error: { code: src.code, message: src.message } };
+  if (isBlockedExecutableExtension(src.canonical)) {
+    return {
+      success: false,
+      error: { code: "EXECUTABLE_BLOCKED", message: "Executable files are blocked." },
+    };
+  }
+  const ext = path.extname(src.canonical);
+  const base = path.basename(src.canonical, ext);
+  let destPath = path.join(path.dirname(src.canonical), `${base} copy${ext}`);
+  let i = 2;
+  while (fsSync.existsSync(destPath) && i < 50) {
+    destPath = path.join(path.dirname(src.canonical), `${base} copy ${i}${ext}`);
+    i += 1;
+  }
+  const dst = assertApprovedPath(destPath, rootsPaths(roots));
+  if (!dst.ok) return { success: false, error: { code: dst.code, message: dst.message } };
+  await fs.copyFile(src.canonical, dst.canonical);
+  return {
+    success: true,
+    data: { path: dst.canonical, activityLabel: "File duplicated" },
+  };
+}
+
+async function deleteFile(
+  filePath: string,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const check = assertApprovedPath(filePath, rootsPaths(roots));
+  if (!check.ok) {
+    return { success: false, error: { code: check.code, message: check.message } };
+  }
+  if (isBlockedExecutableExtension(check.canonical)) {
+    return {
+      success: false,
+      error: { code: "EXECUTABLE_BLOCKED", message: "Executable files are blocked." },
+    };
+  }
+  const st = await fs.stat(check.canonical);
+  if (!st.isFile()) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Path is not a file." },
+    };
+  }
+  await fs.unlink(check.canonical);
+  return {
+    success: true,
+    data: { path: check.canonical, activityLabel: "File deleted" },
+  };
+}
+
+async function deleteFolder(
+  folderPath: string,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const check = assertApprovedPath(folderPath, rootsPaths(roots));
+  if (!check.ok) {
+    return { success: false, error: { code: check.code, message: check.message } };
+  }
+  // Never delete an approved root itself
+  const rootsLower = rootsPaths(roots).map((r) =>
+    normalizePath(r).toLowerCase(),
+  );
+  if (rootsLower.includes(normalizePath(check.canonical).toLowerCase())) {
+    return {
+      success: false,
+      error: {
+        code: "PERMISSION_DENIED",
+        message: "Cannot delete an approved root folder.",
+      },
+    };
+  }
+  const st = await fs.stat(check.canonical);
+  if (!st.isDirectory()) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Path is not a folder." },
+    };
+  }
+  await fs.rm(check.canonical, { recursive: true, force: false });
+  return {
+    success: true,
+    data: { path: check.canonical, activityLabel: "Folder deleted" },
   };
 }

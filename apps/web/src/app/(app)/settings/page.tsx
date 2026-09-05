@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { SYSTEM_ITEMS } from "@aurum/shared";
 import { IntegrationsPanel } from "@/components/settings/IntegrationsPanel";
+import { DesktopUpdatePanel } from "@/components/settings/DesktopUpdatePanel";
 
 export default function SettingsPage() {
   const configured = {
@@ -56,6 +57,17 @@ export default function SettingsPage() {
             </div>
             {model ? <Row label="Text model" value={model} /> : null}
           </dl>
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-[12px] tracking-[0.14em] uppercase text-[var(--aurum-text-dim)]">
+            Desktop
+          </h2>
+          <DesktopUpdatePanel />
+          <p className="py-3 text-[13px] text-[var(--aurum-text-dim)]">
+            Update controls appear when Settings is opened from the installed
+            Aurum Windows app.
+          </p>
         </section>
 
         <section>

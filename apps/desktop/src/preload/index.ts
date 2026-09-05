@@ -5,6 +5,15 @@ import { contextBridge, ipcRenderer } from "electron";
  * Never expose fs, child_process, credentials, or raw IPC.
  */
 
+type UpdaterState = {
+  status: string;
+  currentVersion: string;
+  latestVersion: string | null;
+  progressPercent: number | null;
+  errorMessage: string | null;
+  enabled: boolean;
+};
+
 const aurumDesktop = {
   getInfo: (): Promise<{
     product: string;
@@ -49,9 +58,7 @@ const aurumDesktop = {
   ): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("aurum:overlay-command", { text }),
 
-  startOverlayChat: (
-    text: string,
-  ): Promise<{ id: string }> =>
+  startOverlayChat: (text: string): Promise<{ id: string }> =>
     ipcRenderer.invoke("aurum:overlay-chat-start", { text }),
 
   cancelOverlayChat: (id: string): Promise<{ ok: boolean }> =>
@@ -62,6 +69,28 @@ const aurumDesktop = {
 
   openInAurum: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:open-in-aurum"),
+
+  getUpdaterState: (): Promise<UpdaterState> =>
+    ipcRenderer.invoke("aurum:updater-get-state"),
+
+  checkForUpdates: (): Promise<UpdaterState> =>
+    ipcRenderer.invoke("aurum:updater-check"),
+
+  installUpdate: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("aurum:updater-install"),
+
+  onUpdaterState: (callback: (state: UpdaterState) => void): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      state: UpdaterState,
+    ): void => {
+      callback(state);
+    };
+    ipcRenderer.on("aurum:updater-state", listener);
+    return () => {
+      ipcRenderer.removeListener("aurum:updater-state", listener);
+    };
+  },
 
   onOverlayShown: (
     callback: (state: { paired: boolean; online: boolean }) => void,

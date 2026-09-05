@@ -58,6 +58,8 @@ export {
   MAX_SEARCH_DEPTH,
 } from "./device-security";
 export { registerDesktopTools } from "./desktop-tools";
+export { registerWindowsSystemTools } from "./windows-system-tools";
+export { clampVolumePercent, applyRelativeVolume } from "./volume";
 export {
   registerSpotifyTools,
   createSpotifyGetPlaybackStateTool,

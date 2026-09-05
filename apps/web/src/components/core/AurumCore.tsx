@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ActionStatus,
-  ApprovalSurface,
   AurumPresence,
   PRESENCE_STATES,
   BusinessSurface,
@@ -18,6 +17,7 @@ import {
   TaskSurface,
   type PresenceState,
 } from "@aurum/ui";
+import { ApprovalSurfaceClient } from "./ApprovalSurfaceClient";
 import {
   coreLayoutMode,
   coreStatusLine,
@@ -348,6 +348,10 @@ function ActiveWorkspace({
               tasks={session.surfaceTasks}
               notes={session.surfaceNotes}
               files={session.surfaceFiles}
+              awaitingApproval={session.awaitingApproval}
+              approvalId={session.pendingApprovalId}
+              approvalLabel={session.pendingApprovalLabel}
+              onApprovalResolved={session.clearPendingApproval}
             />
       ) : null}
 
@@ -421,6 +425,10 @@ function ContextualSurface({
   tasks,
   notes,
   files,
+  awaitingApproval,
+  approvalId,
+  approvalLabel,
+  onApprovalResolved,
 }: {
   kind: ContextualSurfaceKind;
   query?: string;
@@ -443,6 +451,10 @@ function ContextualSurface({
     relativePath?: string;
     kind?: string;
   }>;
+  awaitingApproval?: boolean;
+  approvalId?: string | null;
+  approvalLabel?: string | null;
+  onApprovalResolved?: () => void;
 }) {
   switch (kind) {
     case "task":
@@ -479,7 +491,14 @@ function ContextualSurface({
     case "memory":
       return <MemorySurface connected={false} />;
     case "approval":
-      return <ApprovalSurface />;
+      return (
+        <ApprovalSurfaceClient
+          pending={Boolean(awaitingApproval || approvalId)}
+          approvalId={approvalId}
+          actionLabel={approvalLabel}
+          onResolved={onApprovalResolved}
+        />
+      );
     case "search":
       return (
         <SearchResultsSurface query={query} connected results={notes ?? []} />

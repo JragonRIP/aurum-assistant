@@ -82,6 +82,27 @@ Per `(user, device)`. Default: **none**. Native folder picker on desktop. Paths 
 - Tray: Open Aurum / Show Overlay / Status / Launch at Windows start (default **off**) / Quit
 - Overlay commands open web Core (`/core?q=...`) which auto-sends via the same agent path
 
+## Packaging (Windows)
+
+```bash
+npm run pack:desktop
+```
+
+Produces `apps/desktop/release/Aurum-Setup-<version>.exe` (NSIS, x64). Production backend is the default; no Node/npm required on the target PC.
+
+Auto-updates (Phase 4.3): see `docs/PHASE4.3.md`. Pack with `npm run pack:desktop`; publish a GitHub Release with `GH_TOKEN` set and `npm run release:desktop`.
+
+## Backend URL (desktop)
+
+Single authoritative config: `getAurumWebUrl()` in `apps/desktop/src/main/config.ts`.
+
+| Mode | How |
+|------|-----|
+| Production (default) | Unset `AURUM_WEB_URL` → `https://aurum-assistant-aurum-web-design.vercel.app` |
+| Local web | `AURUM_WEB_URL=http://127.0.0.1:3000` via shell, `apps/desktop/.env.local`, or `npm run dev:desktop:local` |
+
+All pairing, heartbeat, poll, results, overlay chat, and roots use this URL. Device secrets stay in `safeStorage`; the URL is not a secret.
+
 ## Migration
 
 `supabase/migrations/20260322030000_phase4_device_bridge.sql`

@@ -76,17 +76,11 @@ describe("Phase 4.1 OAuth state shape", () => {
 });
 
 describe("Phase 4.1 scopes", () => {
-  it("uses least-privilege playback scopes only", () => {
-    assert.deepEqual([...SPOTIFY_SCOPES], [
-      "user-read-playback-state",
-      "user-modify-playback-state",
-      "user-read-currently-playing",
-    ]);
-    assert.equal(
-      SPOTIFY_SCOPES_STRING.includes("playlist"),
-      false,
-    );
-    assert.equal(SPOTIFY_SCOPES_STRING.includes("user-library"), false);
+  it("includes playback plus playlist/library scopes (Phase 4.2)", () => {
+    assert.ok(SPOTIFY_SCOPES.includes("user-read-playback-state"));
+    assert.ok(SPOTIFY_SCOPES.includes("playlist-modify-private"));
+    assert.ok(SPOTIFY_SCOPES.includes("user-library-modify"));
+    assert.ok(SPOTIFY_SCOPES_STRING.includes("playlist"));
     assert.ok(SPOTIFY.capabilities.includes("MEDIA_PLAY"));
   });
 });

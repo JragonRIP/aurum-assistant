@@ -11,6 +11,8 @@ import {
   isSpotifyConfigured,
   SPOTIFY_SCOPES,
   SPOTIFY_SCOPES_STRING,
+  needsSpotifyScopeUpgrade,
+  missingSpotifyScopes,
 } from "./oauth";
 import { SpotifyAdapter, SpotifyApiError } from "./adapter";
 import {
@@ -38,6 +40,9 @@ export type SpotifyConnectionPublic = {
   connectedAt: string | null;
   lastError: string | null;
   scopes: string[];
+  requiredScopes: string[];
+  missingScopes: string[];
+  needsScopeUpgrade: boolean;
   configured: boolean;
 };
 
@@ -112,21 +117,35 @@ export async function getSpotifyConnectionPublic(
       connectedAt: null,
       lastError: null,
       scopes: [],
+      requiredScopes: [...SPOTIFY_SCOPES],
+      missingScopes: [...SPOTIFY_SCOPES],
+      needsScopeUpgrade: false,
       configured,
     };
   }
 
   const row = data as IntegrationRow;
+  const scopes = row.scopes ?? [];
+  const missing = missingSpotifyScopes(scopes);
+  const needsUpgrade =
+    row.status === "connected" && needsSpotifyScopeUpgrade(scopes);
   return {
     provider: "spotify",
     name: "Spotify",
     status: configured
-      ? (row.status as SpotifyConnectionStatus)
+      ? needsUpgrade
+        ? "reconnect_required"
+        : (row.status as SpotifyConnectionStatus)
       : "not_configured",
     accountLabel: row.account_label,
     connectedAt: row.connected_at,
-    lastError: row.last_error,
-    scopes: row.scopes ?? [],
+    lastError: needsUpgrade
+      ? "New Spotify permissions required — reconnect to upgrade."
+      : row.last_error,
+    scopes,
+    requiredScopes: [...SPOTIFY_SCOPES],
+    missingScopes: missing,
+    needsScopeUpgrade: needsUpgrade,
     configured,
   };
 }
@@ -881,6 +900,606 @@ export async function runSpotifyTool(opts: {
         };
       }
 
+      case "search_tracks": {
+        // Alias of search_track with higher default limit for playlist building
+        return runSpotifyTool({
+          ...opts,
+          action: "search_track",
+          input: {
+            ...opts.input,
+            limit:
+              typeof opts.input.limit === "number" ? opts.input.limit : 20,
+          },
+        });
+      }
+
+      case "get_queue": {
+        const queue = await adapter.getQueue();
+        return {
+          success: true,
+          data: {
+            currentlyPlaying: queue.currentlyPlaying
+              ? {
+                  name: queue.currentlyPlaying.name,
+                  artists: queue.currentlyPlaying.artists,
+                }
+              : null,
+            queue: queue.queue.slice(0, 20).map((t) => ({
+              name: t.name,
+              artists: t.artists,
+            })),
+          },
+          message: `Queue has ${queue.queue.length} upcoming track(s).`,
+          activityLabel: "Checked queue",
+        };
+      }
+
+      case "get_user_playlists": {
+        const limit =
+          typeof opts.input.limit === "number" ? opts.input.limit : 20;
+        const playlists = await adapter.getUserPlaylists(limit);
+        const items = [];
+        for (const p of playlists) {
+          const ref = await createIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            provider: "spotify",
+            kind: "playlist",
+            providerId: p.id,
+            providerUri: p.uri,
+            label: p.name,
+            subtitle: p.public ? "Public" : "Private",
+            conversationId: opts.conversationId,
+          });
+          items.push({
+            referenceId: ref.id,
+            name: p.name,
+            public: p.public,
+          });
+        }
+        return {
+          success: true,
+          data: { playlists: items },
+          message: `Found ${items.length} playlist(s).`,
+          activityLabel: "Listed playlists",
+        };
+      }
+
+      case "get_playlist": {
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        const playlist = await adapter.getPlaylist(pref.provider_id);
+        return {
+          success: true,
+          data: {
+            referenceId: pref.id,
+            name: playlist.name,
+            description: playlist.description,
+            public: playlist.public,
+            tracksTotal: playlist.tracksTotal,
+          },
+          message: playlist.name,
+          activityLabel: `Loaded · ${playlist.name}`,
+        };
+      }
+
+      case "get_playlist_items": {
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        const limit =
+          typeof opts.input.limit === "number" ? opts.input.limit : 50;
+        const hits = await adapter.getPlaylistItems(pref.provider_id, limit);
+        const tracks = [];
+        for (const t of hits) {
+          const ref = await createIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            provider: "spotify",
+            kind: "track",
+            providerId: t.id,
+            providerUri: t.uri,
+            label: t.name,
+            subtitle: t.artists.join(", "),
+            conversationId: opts.conversationId,
+          });
+          tracks.push({
+            referenceId: ref.id,
+            name: t.name,
+            artists: t.artists,
+          });
+        }
+        return {
+          success: true,
+          data: { tracks, playlist: pref.label },
+          message: `${tracks.length} track(s) in ${pref.label}.`,
+          activityLabel: "Loaded playlist tracks",
+        };
+      }
+
+      case "search_albums": {
+        const query = String(opts.input.query ?? "").trim();
+        if (!query) {
+          return {
+            success: false,
+            error: { code: "VALIDATION_ERROR", message: "Query required." },
+          };
+        }
+        const hits = await adapter.searchAlbums({
+          query,
+          limit: typeof opts.input.limit === "number" ? opts.input.limit : 5,
+        });
+        const albums = [];
+        for (const a of hits) {
+          const ref = await createIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            provider: "spotify",
+            kind: "album",
+            providerId: a.id,
+            providerUri: a.uri,
+            label: a.name,
+            subtitle: a.artists.join(", "),
+            conversationId: opts.conversationId,
+          });
+          albums.push({
+            referenceId: ref.id,
+            name: a.name,
+            artists: a.artists,
+          });
+        }
+        return {
+          success: true,
+          data: { albums },
+          message: `Found ${albums.length} album(s).`,
+          activityLabel: "Searched albums",
+        };
+      }
+
+      case "search_artists": {
+        const query = String(opts.input.query ?? "").trim();
+        if (!query) {
+          return {
+            success: false,
+            error: { code: "VALIDATION_ERROR", message: "Query required." },
+          };
+        }
+        const hits = await adapter.searchArtists({
+          query,
+          limit: typeof opts.input.limit === "number" ? opts.input.limit : 5,
+        });
+        // Artists are returned as labels for further track searches — no mutation URI path
+        return {
+          success: true,
+          data: {
+            artists: hits.map((a) => ({ name: a.name, idHint: a.id })),
+          },
+          message: `Found ${hits.length} artist(s).`,
+          activityLabel: "Searched artists",
+        };
+      }
+
+      case "play_album":
+      case "play_playlist": {
+        const kind = opts.action === "play_album" ? "album" : "playlist";
+        const cref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.contextReference,
+          provider: "spotify",
+          kind,
+        });
+        if (!cref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Invalid or expired ${kind} reference.`,
+            },
+          };
+        }
+        let deviceId: string | undefined;
+        if (opts.input.deviceReference) {
+          const deviceRef = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.deviceReference,
+            provider: "spotify",
+            kind: "device",
+          });
+          deviceId = deviceRef?.provider_id;
+        }
+        await adapter.playContext({
+          contextUri: cref.provider_uri,
+          deviceId,
+        });
+        return {
+          success: true,
+          data: { name: cref.label, kind },
+          message: `Playing ${cref.label}.`,
+          activityLabel: `Playing · ${cref.label}`,
+        };
+      }
+
+      case "set_shuffle": {
+        let deviceId: string | undefined;
+        if (opts.input.deviceReference) {
+          const deviceRef = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.deviceReference,
+            provider: "spotify",
+            kind: "device",
+          });
+          deviceId = deviceRef?.provider_id;
+        }
+        const enabled = Boolean(opts.input.enabled);
+        await adapter.setShuffle(enabled, deviceId);
+        return {
+          success: true,
+          data: { enabled },
+          message: enabled ? "Shuffle on." : "Shuffle off.",
+          activityLabel: enabled ? "Shuffle on" : "Shuffle off",
+        };
+      }
+
+      case "set_repeat": {
+        const state = opts.input.state as "off" | "track" | "context";
+        let deviceId: string | undefined;
+        if (opts.input.deviceReference) {
+          const deviceRef = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.deviceReference,
+            provider: "spotify",
+            kind: "device",
+          });
+          deviceId = deviceRef?.provider_id;
+        }
+        await adapter.setRepeat(state, deviceId);
+        return {
+          success: true,
+          data: { state },
+          message: `Repeat set to ${state}.`,
+          activityLabel: "Repeat updated",
+        };
+      }
+
+      case "transfer_playback": {
+        const deviceRef = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.deviceReference,
+          provider: "spotify",
+          kind: "device",
+        });
+        if (!deviceRef) {
+          return {
+            success: false,
+            error: {
+              code: "NO_ACTIVE_DEVICE",
+              message: "Invalid or expired device reference.",
+            },
+          };
+        }
+        await adapter.transferPlayback(
+          deviceRef.provider_id,
+          Boolean(opts.input.play),
+        );
+        return {
+          success: true,
+          message: `Playback transferred to ${deviceRef.label}.`,
+          activityLabel: `Transfer · ${deviceRef.label}`,
+        };
+      }
+
+      case "add_to_queue": {
+        const trackRef = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.trackReference,
+          provider: "spotify",
+          kind: "track",
+        });
+        if (!trackRef) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND",
+              message: "Invalid or expired track reference.",
+            },
+          };
+        }
+        let deviceId: string | undefined;
+        if (opts.input.deviceReference) {
+          const deviceRef = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.deviceReference,
+            provider: "spotify",
+            kind: "device",
+          });
+          deviceId = deviceRef?.provider_id;
+        }
+        await adapter.addToQueue(trackRef.provider_uri, deviceId);
+        return {
+          success: true,
+          message: `Queued ${trackRef.label}.`,
+          activityLabel: "Added to queue",
+        };
+      }
+
+      case "save_item": {
+        const trackRef = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.trackReference,
+          provider: "spotify",
+          kind: "track",
+        });
+        if (!trackRef) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND",
+              message: "Invalid or expired track reference.",
+            },
+          };
+        }
+        await adapter.saveTracks([trackRef.provider_id]);
+        return {
+          success: true,
+          message: `Saved ${trackRef.label}.`,
+          activityLabel: "Saved track",
+        };
+      }
+
+      case "remove_saved_item": {
+        const trackRef = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.trackReference,
+          provider: "spotify",
+          kind: "track",
+        });
+        if (!trackRef) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND",
+              message: "Invalid or expired track reference.",
+            },
+          };
+        }
+        await adapter.removeSavedTracks([trackRef.provider_id]);
+        return {
+          success: true,
+          message: `Removed ${trackRef.label} from Liked Songs.`,
+          activityLabel: "Removed saved track",
+        };
+      }
+
+      case "check_saved_item": {
+        const trackRef = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.trackReference,
+          provider: "spotify",
+          kind: "track",
+        });
+        if (!trackRef) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND",
+              message: "Invalid or expired track reference.",
+            },
+          };
+        }
+        const [saved] = await adapter.checkSavedTracks([trackRef.provider_id]);
+        return {
+          success: true,
+          data: { saved: Boolean(saved), track: trackRef.label },
+          message: saved ? "Track is saved." : "Track is not saved.",
+          activityLabel: "Checked library",
+        };
+      }
+
+      case "create_playlist": {
+        const name = String(opts.input.name ?? "").trim();
+        if (!name) {
+          return {
+            success: false,
+            error: { code: "VALIDATION_ERROR", message: "Playlist name required." },
+          };
+        }
+        const userId = await adapter.getCurrentUserId();
+        const created = await adapter.createPlaylist({
+          userId,
+          name,
+          description:
+            typeof opts.input.description === "string"
+              ? opts.input.description
+              : undefined,
+          isPublic: Boolean(opts.input.public),
+        });
+        const ref = await createIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          provider: "spotify",
+          kind: "playlist",
+          providerId: created.id,
+          providerUri: created.uri,
+          label: created.name,
+          subtitle: opts.input.public ? "Public" : "Private",
+          conversationId: opts.conversationId,
+        });
+        return {
+          success: true,
+          data: { referenceId: ref.id, name: created.name },
+          message: `Created playlist ${created.name}.`,
+          activityLabel: `Creating playlist · ${created.name}`,
+        };
+      }
+
+      case "rename_playlist":
+      case "change_playlist_description":
+      case "change_playlist_visibility": {
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        const patch: {
+          name?: string;
+          description?: string;
+          public?: boolean;
+        } = {};
+        if (opts.action === "rename_playlist") {
+          patch.name = String(opts.input.name ?? "").trim();
+        } else if (opts.action === "change_playlist_description") {
+          patch.description = String(opts.input.description ?? "");
+        } else {
+          patch.public = Boolean(opts.input.public);
+        }
+        await adapter.changePlaylistDetails(pref.provider_id, patch);
+        return {
+          success: true,
+          message: `Updated playlist ${pref.label}.`,
+          activityLabel: "Playlist updated",
+        };
+      }
+
+      case "add_playlist_items":
+      case "remove_playlist_items": {
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        const refs = Array.isArray(opts.input.trackReferences)
+          ? opts.input.trackReferences
+          : [];
+        const uris: string[] = [];
+        for (const id of refs) {
+          const tref = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: id,
+            provider: "spotify",
+            kind: "track",
+          });
+          if (tref) uris.push(tref.provider_uri);
+        }
+        if (uris.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: "TRACK_NOT_FOUND",
+              message: "No valid trusted track references.",
+            },
+          };
+        }
+        if (opts.action === "add_playlist_items") {
+          await adapter.addPlaylistItems(pref.provider_id, uris);
+          return {
+            success: true,
+            data: { added: uris.length },
+            message: `Added ${uris.length} track(s) to ${pref.label}.`,
+            activityLabel: `Adding ${uris.length} tracks`,
+          };
+        }
+        await adapter.removePlaylistItems(pref.provider_id, uris);
+        return {
+          success: true,
+          data: { removed: uris.length },
+          message: `Removed ${uris.length} track(s) from ${pref.label}.`,
+          activityLabel: `Removing ${uris.length} tracks`,
+        };
+      }
+
+      case "reorder_playlist_items": {
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        await adapter.reorderPlaylistItems({
+          playlistId: pref.provider_id,
+          rangeStart: Number(opts.input.rangeStart),
+          insertBefore: Number(opts.input.insertBefore),
+          rangeLength:
+            typeof opts.input.rangeLength === "number"
+              ? opts.input.rangeLength
+              : undefined,
+        });
+        return {
+          success: true,
+          message: `Reordered ${pref.label}.`,
+          activityLabel: "Reordered playlist",
+        };
+      }
+
       default:
         return {
           success: false,
@@ -895,4 +1514,4 @@ export async function runSpotifyTool(opts: {
   }
 }
 
-export { SPOTIFY_SCOPES, isSpotifyConfigured };
+export { SPOTIFY_SCOPES, isSpotifyConfigured, needsSpotifyScopeUpgrade };
