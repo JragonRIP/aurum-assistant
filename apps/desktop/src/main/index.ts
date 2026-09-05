@@ -40,7 +40,6 @@ loadDesktopEnv();
 
 const PRODUCT = {
   name: "Aurum",
-  version: "0.2.1",
 } as const;
 
 const DEFAULT_DESKTOP_HOTKEY = "CommandOrControl+Space";
@@ -354,7 +353,7 @@ function quitAurum(): void {
 function registerIpc(): void {
   ipcMain.handle("aurum:get-info", () => ({
     product: PRODUCT.name,
-    version: app.getVersion() || PRODUCT.version,
+    version: app.getVersion(),
     phase: 4.3,
     platform: process.platform,
     webUrl: getAurumWebUrl(),
@@ -366,7 +365,7 @@ function registerIpc(): void {
     return (
       desktopUpdater?.getState() ?? {
         status: "disabled",
-        currentVersion: app.getVersion() || PRODUCT.version,
+        currentVersion: app.getVersion(),
         latestVersion: null,
         progressPercent: null,
         errorMessage: null,
@@ -379,7 +378,7 @@ function registerIpc(): void {
     if (!desktopUpdater) {
       return {
         status: "disabled",
-        currentVersion: app.getVersion() || PRODUCT.version,
+        currentVersion: app.getVersion(),
         latestVersion: null,
         progressPercent: null,
         errorMessage: "Updater not available",
@@ -537,7 +536,7 @@ function registerIpc(): void {
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return;
 
-  desktopUpdater = new DesktopUpdater(app.getVersion() || PRODUCT.version, {
+  desktopUpdater = new DesktopUpdater(app.getVersion(), {
     onStateChange: (state) => broadcastUpdaterState(state),
     beforeQuitAndInstall: () => {
       isQuitting = true;

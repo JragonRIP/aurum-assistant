@@ -25,20 +25,34 @@ No arbitrary update URLs from the model or renderer.
 
 Download is background. When ready: dialog **Restart & Update** / **Later**, plus tray **Restart to Update Aurum**.
 
-## Release
+## Automated release (GitHub Actions)
 
-Set a GitHub token with `repo` scope **only for publishing** (never in the app):
+Pushing a version tag triggers `.github/workflows/desktop-release.yml` on `windows-latest`:
+
+1. `npm ci`
+2. Assert `vX.Y.Z` matches `apps/desktop/package.json`
+3. Desktop typecheck + tests + build
+4. Stage + electron-builder `--publish always` (uses Actions `GITHUB_TOKEN`)
+5. Verify `Aurum-Setup-X.Y.Z.exe`, `.blockmap`, and `latest.yml`
+
+Normal branch pushes do **not** publish a desktop installer (Vercel still deploys web independently).
+
+### Developer flow (one command)
 
 ```powershell
-$env:GH_TOKEN = "ghp_..."   # or fine-grained token with Contents: Read/Write for releases
-npm run release:desktop
+npm run desktop:release:status   # optional
+npm run desktop:release:patch    # or :minor / :major
 ```
 
-Local package without publish:
+This bumps `apps/desktop/package.json`, validates, commits, tags `vX.Y.Z`, and pushes
+commit + tag. GitHub Actions publishes the installer. No local `GH_TOKEN`.
 
-```powershell
-npm run pack:desktop
-```
+Working tree must be clean and branch must be `main` (override with
+`AURUM_RELEASE_BRANCH` only if intentional).
+
+Bump-only (no commit/tag/push): `npm run release:patch`.
+Local package without publish: `npm run pack:desktop`.
+
 
 Artifacts (in `apps/desktop/release/`):
 
@@ -49,11 +63,3 @@ Artifacts (in `apps/desktop/release/`):
 ## Unsigned builds
 
 Aurum is currently unsigned. `verifyUpdateCodeSignature` is `false` so electron-updater can accept unsigned NSIS builds. Windows SmartScreen is **not** bypassed. When Authenticode signing is added, set verification back to `true`.
-
-## Manual test (do not claim pass until run)
-
-1. Install packaged `0.2.1`
-2. Publish `0.2.2` via `npm run release:desktop`
-3. Launch `0.2.1` → wait for check / use tray **Check for Updates**
-4. Confirm download + Restart & Update
-5. Confirm relaunch as `0.2.2`, pairing, Ctrl+Space, production backend
