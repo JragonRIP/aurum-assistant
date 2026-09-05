@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getAurumWebUrl } from "./config";
 import type { DeviceCredential } from "./credentials";
+import { mapOverlayApprovalError } from "./overlay-approval-errors";
 
 export type OverlayChatHandle = { id: string };
 
@@ -82,11 +83,18 @@ export class OverlayChatBridge {
       return { ok: false, error: "Device not paired", code: "DEVICE_OFFLINE" };
     }
     if (!/^[0-9a-f-]{36}$/i.test(approvalId)) {
-      return { ok: false, error: "Invalid approval", code: "NOT_FOUND" };
+      return { ok: false, error: "Invalid approval", code: "APPROVAL_NOT_FOUND" };
     }
     if (decision !== "approve" && decision !== "reject") {
-      return { ok: false, error: "Invalid decision" };
+      return { ok: false, error: "Invalid decision", code: "INVALID_DECISION" };
     }
+
+    console.info("[aurum:overlay-approval]", {
+      stage: "request",
+      approvalId,
+      decision,
+      deviceId: cred.deviceId,
+    });
 
     try {
       const res = await fetch(
@@ -108,10 +116,21 @@ export class OverlayChatBridge {
         code?: string;
         result?: OverlayApprovalDecisionResult["result"];
       };
+
+      console.info("[aurum:overlay-approval]", {
+        stage: "response",
+        approvalId,
+        decision,
+        deviceId: cred.deviceId,
+        httpStatus: res.status,
+        code: data.code ?? null,
+        ok: res.ok,
+      });
+
       if (!res.ok) {
         return {
           ok: false,
-          error: sanitizeUserError(data.error, res.status),
+          error: mapOverlayApprovalError(data.code, data.error, res.status),
           code: data.code,
         };
       }
@@ -121,7 +140,14 @@ export class OverlayChatBridge {
         alreadyResolved: data.alreadyResolved,
         result: data.result,
       };
-    } catch {
+    } catch (err) {
+      console.info("[aurum:overlay-approval]", {
+        stage: "network_error",
+        approvalId,
+        decision,
+        deviceId: cred.deviceId,
+      });
+      void err;
       return {
         ok: false,
         error: "Could not reach Aurum to resolve approval.",
@@ -236,13 +262,4 @@ export class OverlayChatBridge {
   }
 }
 
-function sanitizeUserError(message: string | undefined, status: number): string {
-  if (status === 410) return "This approval expired.";
-  if (status === 409) return "This approval was already resolved.";
-  if (status === 404) return "Approval not found.";
-  if (!message) return "Could not update approval.";
-  if (/powershell|cmd\.exe|stack|token|secret/i.test(message)) {
-    return "Could not update approval.";
-  }
-  return message.length > 160 ? "Could not update approval." : message;
-}
+

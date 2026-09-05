@@ -321,7 +321,13 @@ export function OverlayApp() {
       }
       if (!res.ok) {
         setError(res.error ?? "Could not update approval.");
-        if (res.code === "EXPIRED" || res.code === "ALREADY_RESOLVED") {
+        if (
+          res.code === "EXPIRED" ||
+          res.code === "APPROVAL_EXPIRED" ||
+          res.code === "ALREADY_RESOLVED" ||
+          res.code === "APPROVAL_ALREADY_RESOLVED" ||
+          res.code === "NOT_PENDING"
+        ) {
           setApprovalQueue((q) => q.slice(1));
           if (remainingAfter > 0) {
             setStatus("WAITING FOR APPROVAL");

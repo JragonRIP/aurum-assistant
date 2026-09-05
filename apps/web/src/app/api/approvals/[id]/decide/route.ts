@@ -21,17 +21,23 @@ export async function POST(
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json(
+      { error: "Unauthorized", code: "DEVICE_AUTH_REQUIRED" },
+      { status: 401 },
+    );
   }
 
   const parsed = BodySchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid decision", code: "INVALID_DECISION" },
+      { status: 422 },
+    );
   }
 
   const outcome = await decideApproval({
     supabase,
-    userId: user.id,
+    actor: { userId: user.id, source: "web" },
     approvalId,
     decision: parsed.data.decision,
   });

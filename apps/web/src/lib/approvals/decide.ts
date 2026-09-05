@@ -2,6 +2,9 @@
  * Canonical approval resolution — used by web session and device overlay.
  * Approving executes the stored validated tool args with skipConfirmation.
  * Never re-plans through the model.
+ *
+ * IMPORTANT: public.approvals has no `updated_at` column (see Phase 1 migration).
+ * Do not write updated_at — PostgREST rejects unknown columns and breaks approve/reject.
  */
 import { createDefaultRegistry, executeToolCall } from "@aurum/tools";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -12,11 +15,26 @@ import { listUserDevices } from "@/lib/devices/queries";
 
 export type ApprovalDecision = "approve" | "reject";
 
+export type ApprovalActor = {
+  userId: string;
+  deviceId?: string;
+  source: "web" | "device";
+};
+
+export type DecideApprovalErrorCode =
+  | "APPROVAL_NOT_FOUND"
+  | "APPROVAL_EXPIRED"
+  | "APPROVAL_ALREADY_RESOLVED"
+  | "APPROVAL_FORBIDDEN"
+  | "INVALID_DECISION"
+  | "APPROVAL_EXECUTION_FAILED";
+
 export type DecideApprovalResult =
   | {
       ok: true;
       status: "APPROVED" | "REJECTED";
       alreadyResolved?: boolean;
+      executionId?: string;
       result?: {
         success: boolean;
         message?: string;
@@ -28,12 +46,7 @@ export type DecideApprovalResult =
       ok: false;
       status: number;
       error: string;
-      code?:
-        | "NOT_FOUND"
-        | "NOT_PENDING"
-        | "EXPIRED"
-        | "ALREADY_RESOLVED"
-        | "EXECUTION_FAILED";
+      code: DecideApprovalErrorCode;
     };
 
 type ApprovalRow = {
@@ -70,13 +83,55 @@ function mapStoredResult(raw: unknown): DecideApprovalResult & { ok: true } {
   };
 }
 
+/** Safe boundary log — never secrets, tokens, or tool parameters. */
+export function logApprovalBoundary(
+  stage: string,
+  info: Record<string, string | number | boolean | undefined | null>,
+): void {
+  const safe: Record<string, string | number | boolean> = { stage };
+  for (const [k, v] of Object.entries(info)) {
+    if (v === undefined || v === null) continue;
+    const key = k.toLowerCase();
+    if (
+      key.includes("secret") ||
+      key.includes("token") ||
+      key.includes("bearer") ||
+      key.includes("password") ||
+      key.includes("authorization") ||
+      key.includes("parameter")
+    ) {
+      continue;
+    }
+    safe[k] = v;
+  }
+  console.info("[aurum:approval]", safe);
+}
+
 export async function decideApproval(opts: {
   supabase: SupabaseClient;
-  userId: string;
+  actor: ApprovalActor;
   approvalId: string;
   decision: ApprovalDecision;
 }): Promise<DecideApprovalResult> {
-  const { supabase, userId, approvalId, decision } = opts;
+  const { supabase, actor, approvalId, decision } = opts;
+  const userId = actor.userId;
+
+  logApprovalBoundary("decide_start", {
+    approvalId,
+    decision,
+    source: actor.source,
+    deviceId: actor.deviceId ?? null,
+    userId,
+  });
+
+  if (decision !== "approve" && decision !== "reject") {
+    return {
+      ok: false,
+      status: 422,
+      error: "Invalid decision",
+      code: "INVALID_DECISION",
+    };
+  }
 
   const { data: approval, error } = await supabase
     .from("approvals")
@@ -87,16 +142,40 @@ export async function decideApproval(opts: {
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (error || !approval) {
+  if (error) {
+    logApprovalBoundary("decide_lookup_error", {
+      approvalId,
+      source: actor.source,
+      // PostgREST code only — never full message (may leak schema)
+      dbCode: (error as { code?: string }).code ?? "unknown",
+    });
     return {
       ok: false,
       status: 404,
       error: "Approval not found",
-      code: "NOT_FOUND",
+      code: "APPROVAL_NOT_FOUND",
+    };
+  }
+
+  if (!approval) {
+    return {
+      ok: false,
+      status: 404,
+      error: "Approval not found",
+      code: "APPROVAL_NOT_FOUND",
     };
   }
 
   const row = approval as ApprovalRow;
+
+  if (row.user_id !== userId) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Approval forbidden",
+      code: "APPROVAL_FORBIDDEN",
+    };
+  }
 
   if (
     row.expires_at &&
@@ -105,27 +184,33 @@ export async function decideApproval(opts: {
   ) {
     await supabase
       .from("approvals")
-      .update({ status: "EXPIRED", updated_at: new Date().toISOString() })
+      .update({ status: "EXPIRED" })
       .eq("id", approvalId)
       .eq("status", "PENDING");
     return {
       ok: false,
-      status: 410,
+      status: 409,
       error: "Approval expired",
-      code: "EXPIRED",
+      code: "APPROVAL_EXPIRED",
     };
   }
 
   if (row.status === "APPROVED" && decision === "approve") {
+    logApprovalBoundary("decide_idempotent_approve", { approvalId });
     return mapStoredResult(row.result);
+  }
+
+  if (row.status === "REJECTED" && decision === "reject") {
+    logApprovalBoundary("decide_idempotent_reject", { approvalId });
+    return { ok: true, status: "REJECTED", alreadyResolved: true };
   }
 
   if (row.status !== "PENDING") {
     return {
       ok: false,
       status: 409,
-      error: "Approval is no longer pending",
-      code: "ALREADY_RESOLVED",
+      error: "That approval was already resolved",
+      code: "APPROVAL_ALREADY_RESOLVED",
     };
   }
 
@@ -135,7 +220,6 @@ export async function decideApproval(opts: {
       .update({
         status: "REJECTED",
         approved_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
       })
       .eq("id", approvalId)
       .eq("status", "PENDING")
@@ -143,22 +227,35 @@ export async function decideApproval(opts: {
       .maybeSingle();
 
     if (updErr) {
+      logApprovalBoundary("decide_reject_db_error", {
+        approvalId,
+        dbCode: (updErr as { code?: string }).code ?? "unknown",
+      });
       return {
         ok: false,
         status: 500,
-        error: "Could not reject approval",
-        code: "EXECUTION_FAILED",
+        error: "Couldn't cancel the approval",
+        code: "APPROVAL_EXECUTION_FAILED",
       };
     }
     if (!updated) {
-      // Race: already resolved elsewhere
+      const { data: again } = await supabase
+        .from("approvals")
+        .select("status")
+        .eq("id", approvalId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (again?.status === "REJECTED") {
+        return { ok: true, status: "REJECTED", alreadyResolved: true };
+      }
       return {
         ok: false,
         status: 409,
-        error: "Approval is no longer pending",
-        code: "ALREADY_RESOLVED",
+        error: "That approval was already resolved",
+        code: "APPROVAL_ALREADY_RESOLVED",
       };
     }
+    logApprovalBoundary("decide_rejected", { approvalId, source: actor.source });
     return { ok: true, status: "REJECTED" };
   }
 
@@ -168,7 +265,6 @@ export async function decideApproval(opts: {
     .update({
       status: "APPROVED",
       approved_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     })
     .eq("id", approvalId)
     .eq("status", "PENDING")
@@ -176,16 +272,19 @@ export async function decideApproval(opts: {
     .maybeSingle();
 
   if (claimErr) {
+    logApprovalBoundary("decide_claim_db_error", {
+      approvalId,
+      dbCode: (claimErr as { code?: string }).code ?? "unknown",
+    });
     return {
       ok: false,
       status: 500,
-      error: "Could not approve",
-      code: "EXECUTION_FAILED",
+      error: "Couldn't execute the approved action",
+      code: "APPROVAL_EXECUTION_FAILED",
     };
   }
 
   if (!claimed) {
-    // Another client won the race — return stored result if approved
     const { data: again } = await supabase
       .from("approvals")
       .select("status, result")
@@ -198,8 +297,8 @@ export async function decideApproval(opts: {
     return {
       ok: false,
       status: 409,
-      error: "Approval is no longer pending",
-      code: "ALREADY_RESOLVED",
+      error: "That approval was already resolved",
+      code: "APPROVAL_ALREADY_RESOLVED",
     };
   }
 
@@ -209,43 +308,78 @@ export async function decideApproval(opts: {
   const conversationId = row.conversation_id ?? undefined;
   const generationId = row.generation_id ?? undefined;
 
-  const result = await executeToolCall({
-    registry,
-    toolName,
-    rawArgs: (row.parameters ?? {}) as Record<string, unknown>,
+  logApprovalBoundary("decide_execute_start", {
+    approvalId,
     executionId,
-    ctx: {
-      userId,
-      conversationId,
-      generationId,
-      timezone: "America/Chicago",
-      now: new Date(),
-      skipConfirmation: true,
-      data: createSupabaseToolDataAccess({
-        supabase,
+    tool: toolName,
+    source: actor.source,
+    deviceId: actor.deviceId ?? null,
+  });
+
+  let result;
+  try {
+    result = await executeToolCall({
+      registry,
+      toolName,
+      rawArgs: (row.parameters ?? {}) as Record<string, unknown>,
+      executionId,
+      ctx: {
         userId,
         conversationId,
         generationId,
-      }),
-      dispatchDeviceTool: (tool, input, execId) =>
-        dispatchDeviceTool({
-          supabase,
-          userId,
-          tool,
-          input,
-          executionId: execId,
-        }),
-      listDevices: () => listUserDevices(supabase, userId),
-      runSpotifyAction: (action, input) =>
-        runSpotifyTool({
+        timezone: "America/Chicago",
+        now: new Date(),
+        skipConfirmation: true,
+        data: createSupabaseToolDataAccess({
           supabase,
           userId,
           conversationId,
-          action,
-          input,
+          generationId,
         }),
-    },
-  });
+        dispatchDeviceTool: (tool, input, execId) =>
+          dispatchDeviceTool({
+            supabase,
+            userId,
+            tool,
+            input,
+            executionId: execId,
+          }),
+        listDevices: () => listUserDevices(supabase, userId),
+        runSpotifyAction: (action, input) =>
+          runSpotifyTool({
+            supabase,
+            userId,
+            conversationId,
+            action,
+            input,
+          }),
+      },
+    });
+  } catch (err) {
+    logApprovalBoundary("decide_execute_throw", {
+      approvalId,
+      executionId,
+      tool: toolName,
+    });
+    void err;
+    await supabase
+      .from("approvals")
+      .update({
+        result: {
+          success: false,
+          message: null,
+          error: { code: "EXECUTION_FAILED", message: "Action failed" },
+          activityLabel: null,
+        },
+      })
+      .eq("id", approvalId);
+    return {
+      ok: false,
+      status: 500,
+      error: "Couldn't execute the approved action",
+      code: "APPROVAL_EXECUTION_FAILED",
+    };
+  }
 
   await supabase
     .from("approvals")
@@ -256,13 +390,20 @@ export async function decideApproval(opts: {
         error: result.error ?? null,
         activityLabel: result.activityLabel ?? null,
       },
-      updated_at: new Date().toISOString(),
     })
     .eq("id", approvalId);
+
+  logApprovalBoundary("decide_execute_done", {
+    approvalId,
+    executionId,
+    success: result.success,
+    source: actor.source,
+  });
 
   return {
     ok: true,
     status: "APPROVED",
+    executionId,
     result: {
       success: result.success,
       message: result.message,
@@ -273,7 +414,10 @@ export async function decideApproval(opts: {
 }
 
 /** Overlay / UI helpers for friendly copy */
-export function approvalPrimaryLabel(toolId: string, actionLabel?: string | null): string {
+export function approvalPrimaryLabel(
+  toolId: string,
+  actionLabel?: string | null,
+): string {
   const label = (actionLabel ?? "").trim();
   if (label) return label.endsWith("?") ? label : `${label}?`;
   const map: Record<string, string> = {
@@ -315,4 +459,11 @@ export function approvalConfirmVerb(toolId: string): string {
     terminate_process: "Terminate",
   };
   return map[toolId] ?? "Approve";
+}
+
+/** Assert helpers for regression: approvals schema must not write updated_at */
+export function approvalsUpdatePayloadIsSafe(
+  payload: Record<string, unknown>,
+): boolean {
+  return !("updated_at" in payload);
 }
