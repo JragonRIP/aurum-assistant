@@ -61,6 +61,8 @@ describe("Phase 4.2 registry + permissions", () => {
     assert.ok(registry.get("spotify_create_playlist"));
     assert.ok(registry.get("spotify_add_playlist_items"));
     assert.ok(registry.get("spotify_transfer_playback"));
+    assert.ok(registry.get("spotify_resolve_playlist"));
+    assert.ok(registry.get("spotify_resolve_disambiguation"));
     assert.equal(registry.get("run_command"), undefined);
     assert.equal(registry.get("execute_shell"), undefined);
   });

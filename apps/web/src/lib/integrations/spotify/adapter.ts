@@ -9,6 +9,7 @@ export type SpotifyTrackHit = {
   artists: string[];
   album: string;
   durationMs: number;
+  explicit: boolean;
 };
 
 export type SpotifyDeviceHit = {
@@ -32,6 +33,7 @@ export type SpotifyPlaybackState = {
     artists: string[];
     album: string;
     durationMs: number;
+    explicit?: boolean;
   } | null;
 };
 
@@ -148,19 +150,88 @@ export class SpotifyAdapter {
           uri: string;
           name: string;
           duration_ms: number;
+          explicit?: boolean;
           artists?: Array<{ name: string }>;
           album?: { name: string };
         }>;
       };
     };
-    return (json.tracks?.items ?? []).map((t) => ({
+    return (json.tracks?.items ?? [])
+      .filter((t) => Boolean(t?.id && t?.uri))
+      .map((t) => ({
+        id: t.id,
+        uri: t.uri,
+        name: t.name,
+        artists: (t.artists ?? []).map((a) => a.name),
+        album: t.album?.name ?? "",
+        durationMs: t.duration_ms,
+        explicit: Boolean(t.explicit),
+      }));
+  }
+
+  async getTrack(trackId: string): Promise<SpotifyTrackHit | null> {
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/tracks/${encodeURIComponent(trackId)}`,
+    );
+    if (res.status === 404) return null;
+    await assertOk(res);
+    const t = (await res.json()) as {
+      id: string;
+      uri: string;
+      name: string;
+      duration_ms: number;
+      explicit?: boolean;
+      artists?: Array<{ name: string }>;
+      album?: { name: string };
+    };
+    if (!t?.id) return null;
+    return {
       id: t.id,
       uri: t.uri,
       name: t.name,
       artists: (t.artists ?? []).map((a) => a.name),
       album: t.album?.name ?? "",
       durationMs: t.duration_ms,
-    }));
+      explicit: Boolean(t.explicit),
+    };
+  }
+
+  async searchPlaylists(opts: {
+    query: string;
+    limit?: number;
+  }): Promise<
+    Array<{ id: string; uri: string; name: string; ownerId: string | null }>
+  > {
+    const limit = Math.min(Math.max(opts.limit ?? 5, 1), 10);
+    const params = new URLSearchParams({
+      q: opts.query,
+      type: "playlist",
+      limit: String(limit),
+    });
+    const res = await spotifyFetch(
+      this.accessToken,
+      `/search?${params.toString()}`,
+    );
+    await assertOk(res);
+    const json = (await res.json()) as {
+      playlists?: {
+        items?: Array<{
+          id: string;
+          uri: string;
+          name: string;
+          owner?: { id?: string };
+        } | null>;
+      };
+    };
+    return (json.playlists?.items ?? [])
+      .filter((p): p is NonNullable<typeof p> => Boolean(p?.id && p?.uri))
+      .map((p) => ({
+        id: p.id,
+        uri: p.uri,
+        name: p.name,
+        ownerId: p.owner?.id ?? null,
+      }));
   }
 
   async getPlaybackState(): Promise<SpotifyPlaybackState | null> {
@@ -183,6 +254,7 @@ export class SpotifyAdapter {
         uri: string;
         name: string;
         duration_ms: number;
+        explicit?: boolean;
         artists?: Array<{ name: string }>;
         album?: { name: string };
       } | null;
@@ -209,6 +281,7 @@ export class SpotifyAdapter {
             artists: (json.item.artists ?? []).map((a) => a.name),
             album: json.item.album?.name ?? "",
             durationMs: json.item.duration_ms,
+            explicit: Boolean(json.item.explicit),
           }
         : null,
     };
@@ -339,6 +412,7 @@ export class SpotifyAdapter {
       uri?: string;
       name?: string;
       duration_ms?: number;
+      explicit?: boolean;
       artists?: Array<{ name: string }>;
       album?: { name: string };
     } | null | undefined): SpotifyTrackHit | null => {
@@ -350,6 +424,7 @@ export class SpotifyAdapter {
         artists: (t.artists ?? []).map((a) => a.name),
         album: t.album?.name ?? "",
         durationMs: t.duration_ms ?? 0,
+        explicit: Boolean(t.explicit),
       };
     };
     return {
@@ -467,26 +542,61 @@ export class SpotifyAdapter {
     await assertOk(res);
   }
 
-  async getUserPlaylists(limit = 20): Promise<
-    Array<{ id: string; uri: string; name: string; public: boolean | null }>
+  async getUserPlaylists(limit = 50): Promise<
+    Array<{
+      id: string;
+      uri: string;
+      name: string;
+      public: boolean | null;
+      ownerId: string | null;
+    }>
   > {
-    const params = new URLSearchParams({
-      limit: String(Math.min(Math.max(limit, 1), 50)),
-    });
-    const res = await spotifyFetch(
-      this.accessToken,
-      `/me/playlists?${params.toString()}`,
-    );
-    await assertOk(res);
-    const json = (await res.json()) as {
-      items?: Array<{
-        id: string;
-        uri: string;
-        name: string;
-        public: boolean | null;
-      }>;
-    };
-    return json.items ?? [];
+    const max = Math.min(Math.max(limit, 1), 200);
+    const pageSize = Math.min(50, max);
+    const out: Array<{
+      id: string;
+      uri: string;
+      name: string;
+      public: boolean | null;
+      ownerId: string | null;
+    }> = [];
+    let offset = 0;
+    while (out.length < max) {
+      const params = new URLSearchParams({
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      const res = await spotifyFetch(
+        this.accessToken,
+        `/me/playlists?${params.toString()}`,
+      );
+      await assertOk(res);
+      const json = (await res.json()) as {
+        items?: Array<{
+          id: string;
+          uri: string;
+          name: string;
+          public: boolean | null;
+          owner?: { id?: string };
+        }>;
+        next?: string | null;
+      };
+      const items = json.items ?? [];
+      for (const p of items) {
+        if (!p?.id || !p.uri) continue;
+        out.push({
+          id: p.id,
+          uri: p.uri,
+          name: p.name,
+          public: p.public,
+          ownerId: p.owner?.id ?? null,
+        });
+        if (out.length >= max) break;
+      }
+      if (!json.next || items.length === 0) break;
+      offset += pageSize;
+    }
+    return out;
   }
 
   async getPlaylist(playlistId: string): Promise<{
@@ -526,7 +636,8 @@ export class SpotifyAdapter {
   ): Promise<SpotifyTrackHit[]> {
     const params = new URLSearchParams({
       limit: String(Math.min(Math.max(limit, 1), 100)),
-      fields: "items(track(id,uri,name,duration_ms,artists(name),album(name)))",
+      fields:
+        "items(track(id,uri,name,duration_ms,explicit,artists(name),album(name)))",
     });
     const res = await spotifyFetch(
       this.accessToken,
@@ -540,6 +651,7 @@ export class SpotifyAdapter {
           uri?: string;
           name?: string;
           duration_ms?: number;
+          explicit?: boolean;
           artists?: Array<{ name: string }>;
           album?: { name: string };
         } | null;
@@ -556,6 +668,7 @@ export class SpotifyAdapter {
         artists: (t.artists ?? []).map((a) => a.name),
         album: t.album?.name ?? "",
         durationMs: t.duration_ms ?? 0,
+        explicit: Boolean(t.explicit),
       });
     }
     return out;

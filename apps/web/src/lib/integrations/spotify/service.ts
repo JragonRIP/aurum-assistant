@@ -28,6 +28,24 @@ import {
   setMediaContext,
   type MediaContext,
 } from "../media-context";
+import {
+  resolveTrackSearch,
+  resolveUserPlaylist,
+  learnFromSuccessfulPlay,
+} from "./music-resolve";
+import { normalizeMusicQuery } from "./music-query";
+import {
+  getActiveDisambiguationSession,
+  markDisambiguationResolved,
+  resolveChoiceAgainstCandidates,
+} from "./disambiguation";
+import {
+  clearMusicPreferences,
+  deleteMusicPreference,
+  forgetMusicPreferenceByQuery,
+  listMusicPreferences,
+  upsertMusicPreference,
+} from "./music-preferences";
 
 export type SpotifyConnectionStatus =
   | "disconnected"
@@ -755,81 +773,16 @@ export async function runSpotifyTool(opts: {
             ? opts.input.artist.trim()
             : undefined;
         const limit =
-          typeof opts.input.limit === "number" ? opts.input.limit : 5;
-        if (!query) {
-          return {
-            success: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message: "Search query is required.",
-            },
-            activityLabel: "Search failed",
-          };
-        }
-        const hits = await adapter.searchTracks({ query, artist, limit });
-        if (hits.length === 0) {
-          return {
-            success: false,
-            error: {
-              code: "TRACK_NOT_FOUND",
-              message: "No matching Spotify tracks found.",
-            },
-            activityLabel: "Track not found",
-          };
-        }
-
-        const tracks = [];
-        for (const t of hits) {
-          const ref = await createIntegrationReference({
-            supabase: opts.supabase,
-            userId: opts.userId,
-            provider: "spotify",
-            kind: "track",
-            providerId: t.id,
-            providerUri: t.uri,
-            label: t.name,
-            subtitle: t.artists.join(", "),
-            payload: {
-              album: t.album,
-              durationMs: t.durationMs,
-              artists: t.artists,
-            },
-            conversationId: opts.conversationId,
-          });
-          tracks.push({
-            referenceId: ref.id,
-            name: t.name,
-            artists: t.artists,
-            album: t.album,
-            durationMs: t.durationMs,
-          });
-        }
-
-        const ambiguous =
-          tracks.length > 1 &&
-          !artist &&
-          new Set(tracks.map((t) => t.artists.join("|").toLowerCase())).size >
-            1;
-
-        if (ambiguous) {
-          return {
-            success: false,
-            error: {
-              code: "AMBIGUOUS_TRACK",
-              message: "Multiple plausible tracks — ask which artist.",
-            },
-            data: { tracks, ambiguous: true },
-            message: `Found ${tracks.length} tracks. Ask which one.`,
-            activityLabel: query ? `Found ${query}` : "Search complete",
-          };
-        }
-
-        return {
-          success: true,
-          data: { tracks, ambiguous: false },
-          message: `Found ${tracks.length} track(s).`,
-          activityLabel: query ? `Found ${query}` : "Search complete",
-        };
+          typeof opts.input.limit === "number" ? opts.input.limit : 10;
+        return resolveTrackSearch({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          conversationId: opts.conversationId,
+          adapter,
+          query,
+          artist,
+          limit,
+        });
       }
 
       case "play_track": {
@@ -906,6 +859,40 @@ export async function runSpotifyTool(opts: {
             artistLabel: trackRef.subtitle ?? undefined,
             isPlaying: true,
             trackReference: trackRef.id,
+          });
+        }
+
+        // Learn when this play resolves an open disambiguation session
+        const session = await getActiveDisambiguationSession({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          conversationId: opts.conversationId,
+        });
+        if (
+          session &&
+          session.intent_type === "track" &&
+          session.candidates.some((c) => c.providerId === trackRef.provider_id)
+        ) {
+          await markDisambiguationResolved({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            sessionId: session.id,
+            selectedProviderId: trackRef.provider_id,
+          });
+          await learnFromSuccessfulPlay({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            conversationId: opts.conversationId,
+            kind: "track",
+            providerId: trackRef.provider_id,
+            providerUri: trackRef.provider_uri,
+            name: trackRef.label,
+            artists: trackRef.subtitle ?? undefined,
+            explicit: Boolean(
+              (trackRef.payload as { explicit?: boolean } | null)?.explicit,
+            ),
+            normalizedQuery: session.normalized_query,
+            source: "USER_SELECTED",
           });
         }
 
@@ -1026,7 +1013,7 @@ export async function runSpotifyTool(opts: {
 
       case "get_user_playlists": {
         const limit =
-          typeof opts.input.limit === "number" ? opts.input.limit : 20;
+          typeof opts.input.limit === "number" ? opts.input.limit : 100;
         const playlists = await adapter.getUserPlaylists(limit);
         const items = [];
         for (const p of playlists) {
@@ -1039,12 +1026,14 @@ export async function runSpotifyTool(opts: {
             providerUri: p.uri,
             label: p.name,
             subtitle: p.public ? "Public" : "Private",
+            payload: { ownerId: p.ownerId },
             conversationId: opts.conversationId,
           });
           items.push({
             referenceId: ref.id,
             name: p.name,
             public: p.public,
+            ownerId: p.ownerId,
           });
         }
         return {
@@ -1196,6 +1185,364 @@ export async function runSpotifyTool(opts: {
         };
       }
 
+      case "resolve_playlist": {
+        return resolveUserPlaylist({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          conversationId: opts.conversationId,
+          adapter,
+          query: String(opts.input.query ?? ""),
+          mineOnly:
+            typeof opts.input.mineOnly === "boolean"
+              ? opts.input.mineOnly
+              : true,
+        });
+      }
+
+      case "resolve_disambiguation": {
+        const choice = String(opts.input.choice ?? "").trim();
+        if (!choice) {
+          return {
+            success: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Choice text is required.",
+            },
+          };
+        }
+        const session = await getActiveDisambiguationSession({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          conversationId: opts.conversationId,
+        });
+        if (!session) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message:
+                "No active clarification to resolve. Search again, then ask.",
+            },
+            activityLabel: "No clarification pending",
+          };
+        }
+        const picked = resolveChoiceAgainstCandidates(
+          choice,
+          session.candidates,
+        );
+        if (!picked) {
+          return {
+            success: false,
+            error: {
+              code:
+                session.intent_type === "playlist"
+                  ? "AMBIGUOUS_PLAYLIST"
+                  : "AMBIGUOUS_TRACK",
+              message: "Could not match that answer to a candidate — ask again.",
+            },
+            data: {
+              candidates: session.candidates.map((c) => ({
+                name: c.name,
+                artists: c.artists,
+                playlistName: c.playlistName,
+              })),
+            },
+          };
+        }
+
+        const temporary = opts.input.temporary === true;
+        const persist = opts.input.persist === true;
+        const source = persist
+          ? "USER_EXPLICITLY_PREFERRED"
+          : "USER_SELECTED";
+
+        const kind = session.intent_type === "playlist" ? "playlist" : "track";
+        const ref = await createIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          provider: "spotify",
+          kind,
+          providerId: picked.providerId,
+          providerUri: picked.providerUri,
+          label: picked.name,
+          subtitle:
+            picked.artists?.join(", ") ??
+            picked.playlistName ??
+            null,
+          payload: {
+            artists: picked.artists,
+            album: picked.album,
+            explicit: picked.explicit,
+            fromDisambiguation: true,
+          },
+          conversationId: opts.conversationId,
+        });
+
+        await markDisambiguationResolved({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          sessionId: session.id,
+          selectedProviderId: picked.providerId,
+        });
+
+        if (!temporary || persist) {
+          await upsertMusicPreference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            input: {
+              intentType: kind,
+              normalizedQuery: session.normalized_query,
+              spotifyResourceType: kind,
+              spotifyResourceId: picked.providerId,
+              spotifyResourceUri: picked.providerUri,
+              trackName: kind === "track" ? picked.name : null,
+              artistName: picked.artists?.join(", ") ?? null,
+              albumName: picked.album ?? null,
+              playlistName: kind === "playlist" ? picked.name : null,
+              explicit: picked.explicit ?? null,
+              source,
+            },
+          });
+        }
+
+        if (kind === "track") {
+          return {
+            success: true,
+            data: {
+              tracks: [
+                {
+                  referenceId: ref.id,
+                  name: picked.name,
+                  artists: picked.artists ?? [],
+                  album: picked.album,
+                  explicit: picked.explicit,
+                },
+              ],
+              referenceId: ref.id,
+              kind,
+              persisted: !temporary || persist,
+            },
+            message: `Selected ${picked.name}${
+              picked.artists?.length
+                ? ` — ${picked.artists.join(", ")}`
+                : ""
+            }.`,
+            activityLabel: `Selected · ${picked.name}`,
+          };
+        }
+
+        return {
+          success: true,
+          data: {
+            playlists: [
+              {
+                referenceId: ref.id,
+                name: picked.name,
+              },
+            ],
+            referenceId: ref.id,
+            kind,
+            persisted: !temporary || persist,
+          },
+          message: `Selected playlist ${picked.name}.`,
+          activityLabel: `Selected · ${picked.name}`,
+        };
+      }
+
+      case "list_music_preferences": {
+        const rows = await listMusicPreferences({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          intentType:
+            opts.input.intentType === "track" ||
+            opts.input.intentType === "playlist" ||
+            opts.input.intentType === "album"
+              ? opts.input.intentType
+              : undefined,
+          limit:
+            typeof opts.input.limit === "number" ? opts.input.limit : 50,
+        });
+        return {
+          success: true,
+          data: {
+            preferences: rows.map((r) => ({
+              preferenceId: r.id,
+              intentType: r.intent_type,
+              query: r.normalized_query,
+              name: r.track_name ?? r.playlist_name ?? r.album_name,
+              artists: r.artist_name,
+              explicit: r.explicit,
+              source: r.source,
+              useCount: r.use_count,
+              lastUsedAt: r.last_used_at,
+              stale: r.stale,
+            })),
+          },
+          message:
+            rows.length === 0
+              ? "No remembered music preferences."
+              : `${rows.length} remembered preference(s).`,
+          activityLabel: "Listed music memory",
+        };
+      }
+
+      case "forget_music_preference": {
+        if (typeof opts.input.preferenceId === "string") {
+          const ok = await deleteMusicPreference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            preferenceId: opts.input.preferenceId,
+          });
+          return {
+            success: ok,
+            message: ok ? "Forgot that preference." : "Preference not found.",
+            activityLabel: "Updated music memory",
+          };
+        }
+        const query = String(opts.input.query ?? "").trim();
+        if (!query) {
+          // clear all when neither id nor query — require intent or refuse
+          if (opts.input.intentType) {
+            const n = await clearMusicPreferences({
+              supabase: opts.supabase,
+              userId: opts.userId,
+              intentType: opts.input.intentType as
+                | "track"
+                | "playlist"
+                | "album",
+            });
+            return {
+              success: true,
+              message: `Cleared ${n} preference(s).`,
+              activityLabel: "Updated music memory",
+            };
+          }
+          return {
+            success: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Provide preferenceId or query to forget.",
+            },
+          };
+        }
+        const normalized = normalizeMusicQuery(query);
+        const intent =
+          opts.input.intentType === "playlist" ||
+          opts.input.intentType === "album"
+            ? opts.input.intentType
+            : "track";
+        const ok = await forgetMusicPreferenceByQuery({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          intentType: intent,
+          normalizedQuery: normalized.key,
+        });
+        return {
+          success: ok,
+          message: ok
+            ? `Forgot preference for “${normalized.key}”.`
+            : "Preference not found.",
+          activityLabel: "Updated music memory",
+        };
+      }
+
+      case "remember_music_preference": {
+        const query = String(opts.input.query ?? "").trim();
+        if (!query) {
+          return {
+            success: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Query phrase is required.",
+            },
+          };
+        }
+        const normalized = normalizeMusicQuery(query);
+        if (opts.input.trackReference) {
+          const trackRef = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.trackReference,
+            provider: "spotify",
+            kind: "track",
+          });
+          if (!trackRef) {
+            return {
+              success: false,
+              error: {
+                code: "TRACK_NOT_FOUND",
+                message: "Invalid or expired track reference.",
+              },
+            };
+          }
+          await upsertMusicPreference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            input: {
+              intentType: "track",
+              normalizedQuery: normalized.key,
+              spotifyResourceType: "track",
+              spotifyResourceId: trackRef.provider_id,
+              spotifyResourceUri: trackRef.provider_uri,
+              trackName: trackRef.label,
+              artistName: trackRef.subtitle,
+              explicit: Boolean(
+                (trackRef.payload as { explicit?: boolean } | null)?.explicit,
+              ),
+              source: "USER_EXPLICITLY_PREFERRED",
+            },
+          });
+          return {
+            success: true,
+            message: `I'll use ${trackRef.label} when you say “${normalized.key}”.`,
+            activityLabel: "Saved music memory",
+          };
+        }
+        if (opts.input.playlistReference) {
+          const pref = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.playlistReference,
+            provider: "spotify",
+            kind: "playlist",
+          });
+          if (!pref) {
+            return {
+              success: false,
+              error: {
+                code: "NOT_FOUND",
+                message: "Invalid or expired playlist reference.",
+              },
+            };
+          }
+          await upsertMusicPreference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            input: {
+              intentType: "playlist",
+              normalizedQuery: normalized.key,
+              spotifyResourceType: "playlist",
+              spotifyResourceId: pref.provider_id,
+              spotifyResourceUri: pref.provider_uri,
+              playlistName: pref.label,
+              source: "USER_EXPLICITLY_PREFERRED",
+            },
+          });
+          return {
+            success: true,
+            message: `I'll use playlist ${pref.label} when you say “${normalized.key}”.`,
+            activityLabel: "Saved music memory",
+          };
+        }
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Provide trackReference or playlistReference.",
+          },
+        };
+      }
+
       case "play_album":
       case "play_playlist": {
         const kind = opts.action === "play_album" ? "album" : "playlist";
@@ -1263,6 +1610,37 @@ export async function runSpotifyTool(opts: {
             trackLabel: cref.label,
             isPlaying: true,
           });
+        }
+
+        if (kind === "playlist") {
+          const session = await getActiveDisambiguationSession({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            conversationId: opts.conversationId,
+          });
+          if (
+            session &&
+            session.intent_type === "playlist" &&
+            session.candidates.some((c) => c.providerId === cref.provider_id)
+          ) {
+            await markDisambiguationResolved({
+              supabase: opts.supabase,
+              userId: opts.userId,
+              sessionId: session.id,
+              selectedProviderId: cref.provider_id,
+            });
+            await learnFromSuccessfulPlay({
+              supabase: opts.supabase,
+              userId: opts.userId,
+              conversationId: opts.conversationId,
+              kind: "playlist",
+              providerId: cref.provider_id,
+              providerUri: cref.provider_uri,
+              name: cref.label,
+              normalizedQuery: session.normalized_query,
+              source: "USER_SELECTED",
+            });
+          }
         }
 
         return {

@@ -118,6 +118,11 @@ export type SpotifyAction =
   | "search_tracks"
   | "search_albums"
   | "search_artists"
+  | "resolve_playlist"
+  | "resolve_disambiguation"
+  | "list_music_preferences"
+  | "forget_music_preference"
+  | "remember_music_preference"
   | "play_track"
   | "play_album"
   | "play_playlist"
@@ -209,8 +214,11 @@ export function createSpotifyGetUserPlaylistsTool() {
   return spotifyTool({
     id: "spotify_get_user_playlists",
     name: "Get Spotify playlists",
-    description: "List the user's playlists as trusted playlist references.",
-    inputSchema: z.object({ limit: z.number().int().min(1).max(50).optional() }),
+    description:
+      "List the user's Spotify playlists as trusted playlist references (paginated library). Prefer spotify_resolve_playlist when the user names a playlist.",
+    inputSchema: z.object({
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
     permission: "READ",
     activityLabel: "Listing playlists",
     action: "get_user_playlists",
@@ -246,7 +254,7 @@ export function createSpotifySearchTrackTool() {
     id: "spotify_search_track",
     name: "Search Spotify tracks",
     description:
-      "Search Spotify for tracks. Returns trusted trackReference UUIDs. Never invent Spotify URIs.",
+      "Search Spotify for tracks with preference memory + explicit-version ranking. Returns trusted trackReference UUIDs. Consults remembered resolutions before asking. Never invent Spotify URIs.",
     inputSchema: searchTrackSchema,
     permission: "READ",
     activityLabel: "Searching Spotify",
@@ -320,11 +328,98 @@ export function createSpotifyPlayPlaylistTool() {
   return spotifyTool({
     id: "spotify_play_playlist",
     name: "Play Spotify playlist",
-    description: "Play a playlist via trusted playlist reference (contextReference).",
+    description:
+      "Play a playlist via trusted playlist reference (contextReference). Resolve with spotify_resolve_playlist first for named/my playlists.",
     inputSchema: playContextSchema,
     permission: "SAFE_WRITE",
     activityLabel: "Playing playlist",
     action: "play_playlist",
+  });
+}
+
+export function createSpotifyResolvePlaylistTool() {
+  return spotifyTool({
+    id: "spotify_resolve_playlist",
+    name: "Resolve Spotify playlist by name",
+    description:
+      "Find the user's playlist by name (prefers owned library when they say 'my'). Uses remembered playlist preferences. Returns trusted playlistReference(s). On AMBIGUOUS_PLAYLIST, ask which one then call spotify_resolve_disambiguation.",
+    inputSchema: z.object({
+      query: z.string().min(1).max(200),
+      mineOnly: z
+        .boolean()
+        .optional()
+        .describe("Default true. Set false only when not asking for 'my' playlist."),
+    }),
+    permission: "READ",
+    activityLabel: "Finding playlist",
+    action: "resolve_playlist",
+  });
+}
+
+export function createSpotifyResolveDisambiguationTool() {
+  return spotifyTool({
+    id: "spotify_resolve_disambiguation",
+    name: "Resolve music disambiguation",
+    description:
+      "Resolve a short clarification like 'Kirko' or 'Lil Wayne Hits' against the active candidate set from AMBIGUOUS_TRACK / AMBIGUOUS_PLAYLIST. Saves USER_SELECTED preference unless temporary=true. Use persist=true for 'from now on' / 'always'.",
+    inputSchema: z.object({
+      choice: z.string().min(1).max(200),
+      temporary: z.boolean().optional(),
+      persist: z.boolean().optional(),
+    }),
+    permission: "READ",
+    activityLabel: "Resolving choice",
+    action: "resolve_disambiguation",
+  });
+}
+
+export function createSpotifyListMusicPreferencesTool() {
+  return spotifyTool({
+    id: "spotify_list_music_preferences",
+    name: "List music preferences",
+    description:
+      "List remembered song/playlist resolutions for this user (inspectable memory).",
+    inputSchema: z.object({
+      intentType: z.enum(["track", "playlist", "album"]).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    permission: "READ",
+    activityLabel: "Listing music memory",
+    action: "list_music_preferences",
+  });
+}
+
+export function createSpotifyForgetMusicPreferenceTool() {
+  return spotifyTool({
+    id: "spotify_forget_music_preference",
+    name: "Forget music preference",
+    description:
+      "Delete a remembered music resolution by preferenceId or by query text (e.g. forget 'Drank in My Cup').",
+    inputSchema: z.object({
+      preferenceId: z.string().uuid().optional(),
+      query: z.string().min(1).max(200).optional(),
+      intentType: z.enum(["track", "playlist", "album"]).optional(),
+    }),
+    permission: "SAFE_WRITE",
+    activityLabel: "Updating music memory",
+    action: "forget_music_preference",
+  });
+}
+
+export function createSpotifyRememberMusicPreferenceTool() {
+  return spotifyTool({
+    id: "spotify_remember_music_preference",
+    name: "Remember music preference",
+    description:
+      "Persist an explicit mapping like 'When I say Drank in My Cup, I mean Kirko' using a trusted track/playlist reference.",
+    inputSchema: z.object({
+      query: z.string().min(1).max(200),
+      trackReference: z.string().uuid().optional(),
+      playlistReference: z.string().uuid().optional(),
+    }),
+    permission: "SAFE_WRITE",
+    activityLabel: "Saving music memory",
+    action: "remember_music_preference",
   });
 }
 
@@ -571,6 +666,11 @@ export function registerSpotifyTools(registry: ToolRegistry): void {
   registry.register(createSpotifySearchTracksTool());
   registry.register(createSpotifySearchAlbumsTool());
   registry.register(createSpotifySearchArtistsTool());
+  registry.register(createSpotifyResolvePlaylistTool());
+  registry.register(createSpotifyResolveDisambiguationTool());
+  registry.register(createSpotifyListMusicPreferencesTool());
+  registry.register(createSpotifyForgetMusicPreferenceTool());
+  registry.register(createSpotifyRememberMusicPreferenceTool());
   registry.register(createSpotifyPlayTrackTool());
   registry.register(createSpotifyPlayAlbumTool());
   registry.register(createSpotifyPlayPlaylistTool());
