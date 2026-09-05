@@ -4,6 +4,11 @@ import {
   type PresencePresentation,
   type PresenceState,
 } from "@aurum/ui";
+import {
+  approvalConfirmVerb,
+  approvalDetail,
+  approvalPrimaryLabel,
+} from "./approval-copy";
 
 type OverlayInfo = {
   paired: boolean;
@@ -22,23 +27,39 @@ type StreamEvent = {
   state?: string;
   text?: string;
   tool?: string;
+  approvalId?: string;
+  executionId?: string;
   display?: { label?: string; detail?: string };
   data?: Record<string, unknown>;
-  error?: { message?: string };
+  error?: { message?: string; code?: string };
   message?: { content?: string };
   outcome?: { usedFallbackResponse?: boolean; warning?: string };
 };
 
-function mapPresence(
-  streaming: boolean,
-  acting: boolean,
-  error: string | null,
-  offline: boolean,
-): { state: PresenceState; presentation: PresencePresentation } {
-  if (offline) return { state: "OFFLINE", presentation: "offline" };
-  if (error && !streaming) return { state: "ERROR", presentation: "error" };
-  if (acting) return { state: "ACTING", presentation: "acting" };
-  if (streaming) return { state: "THINKING", presentation: "thinking" };
+type PendingApproval = {
+  approvalId: string;
+  tool: string;
+  label: string;
+  detail: string;
+  confirmVerb: string;
+};
+
+function mapPresence(opts: {
+  streaming: boolean;
+  acting: boolean;
+  awaitingApproval: boolean;
+  error: string | null;
+  offline: boolean;
+}): { state: PresenceState; presentation: PresencePresentation } {
+  if (opts.offline) return { state: "OFFLINE", presentation: "offline" };
+  if (opts.error && !opts.streaming && !opts.awaitingApproval) {
+    return { state: "ERROR", presentation: "error" };
+  }
+  if (opts.awaitingApproval) {
+    return { state: "WAITING_FOR_APPROVAL", presentation: "hold" };
+  }
+  if (opts.acting) return { state: "ACTING", presentation: "acting" };
+  if (opts.streaming) return { state: "THINKING", presentation: "thinking" };
   return { state: "IDLE", presentation: "idle" };
 }
 
@@ -56,8 +77,23 @@ export function OverlayApp() {
   const [successFlash, setSuccessFlash] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [approvalQueue, setApprovalQueue] = useState<PendingApproval[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
   const inFlightTools = useRef(new Set<string>());
+  const awaitingApprovalRef = useRef(false);
+  const replyRef = useRef("");
+
+  const pendingApproval = approvalQueue[0] ?? null;
+  const awaitingApproval = Boolean(pendingApproval);
+
+  useEffect(() => {
+    awaitingApprovalRef.current = awaitingApproval;
+  }, [awaitingApproval]);
+
+  useEffect(() => {
+    replyRef.current = reply;
+  }, [reply]);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,9 +102,9 @@ export function OverlayApp() {
       setOnline(Boolean(info.online));
       if (!info.paired) setStatus("CONNECT");
       else if (!info.online) setStatus("OFFLINE");
-      else if (!streaming) setStatus("READY");
+      else if (!streaming && !awaitingApprovalRef.current) setStatus("READY");
     } catch {
-      setStatus("READY");
+      if (!awaitingApprovalRef.current) setStatus("READY");
     }
   }, [streaming]);
 
@@ -77,9 +113,11 @@ export function OverlayApp() {
     const unsub = window.aurumDesktop.onOverlayShown?.((state) => {
       setPaired(state.paired);
       setOnline(state.online);
-      setError(null);
-      if (!state.paired) setStatus("CONNECT");
-      else setStatus(state.online ? "READY" : "OFFLINE");
+      if (!awaitingApprovalRef.current) {
+        setError(null);
+        if (!state.paired) setStatus("CONNECT");
+        else setStatus(state.online ? "READY" : "OFFLINE");
+      }
       window.setTimeout(() => inputRef.current?.focus(), 30);
     });
     return () => unsub?.();
@@ -88,8 +126,14 @@ export function OverlayApp() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
+      e.preventDefault();
+      // Esc never approves. With a pending approval: hide overlay only;
+      // the approval stays PENDING in the backend for the full app / later.
+      if (awaitingApprovalRef.current) {
+        void window.aurumDesktop.hideOverlay();
+        return;
+      }
       if (streaming) {
-        e.preventDefault();
         abortRef.current?.();
         setStreaming(false);
         setActing(false);
@@ -107,12 +151,13 @@ export function OverlayApp() {
     void window.aurumDesktop.setOverlayExpanded?.(expanded);
   }, [expanded]);
 
-  const presence = mapPresence(
+  const presence = mapPresence({
     streaming,
     acting,
+    awaitingApproval,
     error,
-    paired && !online && !streaming,
-  );
+    offline: paired && !online && !streaming && !awaitingApproval,
+  });
   const presentation = successFlash ? "success" : presence.presentation;
 
   async function handlePair() {
@@ -132,8 +177,34 @@ export function OverlayApp() {
     await refresh();
   }
 
+  function enqueueApproval(event: StreamEvent) {
+    const approvalId = event.approvalId;
+    if (!approvalId || typeof approvalId !== "string") return;
+    const tool = event.tool ?? "action";
+    const next: PendingApproval = {
+      approvalId,
+      tool,
+      label: approvalPrimaryLabel(tool, event.display?.label),
+      detail: event.display?.detail ?? approvalDetail(tool),
+      confirmVerb: approvalConfirmVerb(tool),
+    };
+    setApprovalQueue((prev) => {
+      if (prev.some((p) => p.approvalId === approvalId)) return prev;
+      return [...prev, next];
+    });
+    setActing(false);
+    setError(null);
+    setStatus("WAITING FOR APPROVAL");
+    setExpanded(true);
+  }
+
   function applyEvent(event: StreamEvent) {
+    if (event.type === "approval_required") {
+      enqueueApproval(event);
+      return;
+    }
     if (event.type === "status") {
+      if (awaitingApprovalRef.current) return;
       if (event.state === "acting") {
         if (inFlightTools.current.size > 0) setActing(true);
       }
@@ -145,6 +216,7 @@ export function OverlayApp() {
       return;
     }
     if (event.type === "tool_requested" || event.type === "tool_started") {
+      if (awaitingApprovalRef.current) return;
       const key = event.tool ?? "tool";
       inFlightTools.current.add(key);
       setActing(true);
@@ -156,8 +228,10 @@ export function OverlayApp() {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
-      const label = (event.display?.label ?? "DONE").toUpperCase();
-      setStatus(label);
+      if (!awaitingApprovalRef.current) {
+        const label = (event.display?.label ?? "DONE").toUpperCase();
+        setStatus(label);
+      }
       const data = event.data;
       if (data && typeof data === "object") {
         const title =
@@ -173,7 +247,9 @@ export function OverlayApp() {
           setNowPlaying({
             title,
             artist: artists[0],
-            playing: event.tool === "spotify_play_track" || event.tool === "spotify_resume",
+            playing:
+              event.tool === "spotify_play_track" ||
+              event.tool === "spotify_resume",
           });
         }
         if (event.tool === "spotify_pause") {
@@ -188,6 +264,13 @@ export function OverlayApp() {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
+      // APPROVAL_REQUIRED is also signaled via approval_required — never ERROR
+      if (
+        event.error?.code === "APPROVAL_REQUIRED" ||
+        awaitingApprovalRef.current
+      ) {
+        return;
+      }
       setError(event.error?.message ?? event.display?.detail ?? "Action failed");
       setStatus("ERROR");
       return;
@@ -198,11 +281,16 @@ export function OverlayApp() {
       return;
     }
     if (event.type === "done") {
-      if (event.message?.content && !reply) {
+      if (event.message?.content && !replyRef.current) {
         setReply(event.message.content);
       }
-      if (event.outcome?.warning) {
+      if (event.outcome?.warning && !awaitingApprovalRef.current) {
         setError(event.outcome.warning);
+      }
+      if (awaitingApprovalRef.current) {
+        setStatus("WAITING FOR APPROVAL");
+        setActing(false);
+        return;
       }
       setSuccessFlash(true);
       window.setTimeout(() => setSuccessFlash(false), 700);
@@ -210,14 +298,84 @@ export function OverlayApp() {
       return;
     }
     if (event.type === "error") {
+      if (awaitingApprovalRef.current) return;
       setError(event.error?.message ?? "Something went wrong");
       setStatus("ERROR");
     }
   }
 
+  async function resolveApproval(decision: "approve" | "reject") {
+    const current = approvalQueue[0];
+    if (!current || approvalBusy) return;
+    const remainingAfter = approvalQueue.length - 1;
+    setApprovalBusy(true);
+    setError(null);
+    try {
+      const res = await window.aurumDesktop.decideOverlayApproval?.(
+        current.approvalId,
+        decision,
+      );
+      if (!res) {
+        setError("Approval is unavailable in this build.");
+        return;
+      }
+      if (!res.ok) {
+        setError(res.error ?? "Could not update approval.");
+        if (res.code === "EXPIRED" || res.code === "ALREADY_RESOLVED") {
+          setApprovalQueue((q) => q.slice(1));
+          if (remainingAfter > 0) {
+            setStatus("WAITING FOR APPROVAL");
+          }
+        }
+        return;
+      }
+
+      setApprovalQueue((q) => q.slice(1));
+
+      if (remainingAfter > 0) {
+        setStatus("WAITING FOR APPROVAL");
+        setActing(false);
+        if (decision === "reject") {
+          setReply("Cancelled. Next approval ready.");
+        }
+        return;
+      }
+
+      if (decision === "reject") {
+        setReply("Cancelled.");
+        setStatus("READY");
+        setActing(false);
+        return;
+      }
+
+      const activity =
+        res.result?.activityLabel ??
+        res.result?.message ??
+        (res.result?.success ? "Done." : null);
+      if (res.result?.success) {
+        setReply(activity ?? "Done.");
+        setStatus((activity ?? "DONE").toUpperCase());
+        setSuccessFlash(true);
+        window.setTimeout(() => setSuccessFlash(false), 700);
+        setActing(false);
+      } else {
+        setError(
+          res.result?.error?.message ??
+            res.result?.message ??
+            "Approved, but the action failed.",
+        );
+        setStatus("ERROR");
+        setActing(false);
+      }
+    } finally {
+      setApprovalBusy(false);
+      window.setTimeout(() => inputRef.current?.focus(), 40);
+    }
+  }
+
   async function handleSubmit() {
     const text = command.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || awaitingApproval) return;
     if (!paired) {
       setStatus("CONNECT");
       return;
@@ -229,6 +387,7 @@ export function OverlayApp() {
     setActing(false);
     setStatus("THINKING");
     setExpanded(true);
+    setApprovalQueue([]);
     inFlightTools.current.clear();
 
     const handle = await window.aurumDesktop.startOverlayChat(text);
@@ -243,9 +402,11 @@ export function OverlayApp() {
         setStreaming(false);
         setActing(false);
         inFlightTools.current.clear();
-        if (payload.error) {
+        if (payload.error && !awaitingApprovalRef.current) {
           setError(payload.error);
           setStatus("ERROR");
+        } else if (awaitingApprovalRef.current) {
+          setStatus("WAITING FOR APPROVAL");
         } else if (!error) {
           setStatus("READY");
         }
@@ -274,7 +435,11 @@ export function OverlayApp() {
                 if (e.key === "Enter") void handlePair();
               }}
             />
-            <button type="button" className="overlay-btn" onClick={() => void handlePair()}>
+            <button
+              type="button"
+              className="overlay-btn"
+              onClick={() => void handlePair()}
+            >
               Connect
             </button>
           </div>
@@ -286,6 +451,9 @@ export function OverlayApp() {
     );
   }
 
+  const showBody =
+    reply || error || nowPlaying || streaming || pendingApproval;
+
   return (
     <div className="overlay-shell">
       <div className="overlay-panel">
@@ -296,39 +464,78 @@ export function OverlayApp() {
             presentation={presentation}
           />
         </div>
-        <div className={`overlay-status${error && !streaming ? " error" : ""}`}>
-          {error && !streaming ? "ERROR" : status}
+        <div
+          className={`overlay-status${error && !streaming && !awaitingApproval ? " error" : ""}`}
+        >
+          {error && !streaming && !awaitingApproval
+            ? "ERROR"
+            : status}
         </div>
         <input
           ref={inputRef}
           className="overlay-command"
           value={command}
           placeholder="What do you need?"
-          disabled={streaming}
+          disabled={streaming || awaitingApproval}
           onChange={(e) => setCommand(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleSubmit();
           }}
         />
-        {(reply || error || nowPlaying || streaming) && (
+        {showBody ? (
           <div className="overlay-body">
-            {reply ? <div className="overlay-reply">{reply}</div> : null}
+            {pendingApproval ? (
+              <div className="overlay-approval" role="dialog" aria-modal="true">
+                <div className="overlay-approval-title">
+                  {pendingApproval.label}
+                </div>
+                <div className="overlay-approval-detail">
+                  {pendingApproval.detail}
+                </div>
+                <div className="overlay-approval-actions">
+                  <button
+                    type="button"
+                    className="overlay-btn overlay-btn-primary"
+                    disabled={approvalBusy}
+                    onClick={() => void resolveApproval("approve")}
+                  >
+                    {approvalBusy
+                      ? "Working…"
+                      : pendingApproval.confirmVerb}
+                  </button>
+                  <button
+                    type="button"
+                    className="overlay-btn"
+                    disabled={approvalBusy}
+                    onClick={() => void resolveApproval("reject")}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {!pendingApproval && reply ? (
+              <div className="overlay-reply">{reply}</div>
+            ) : null}
             {error ? (
               <div className="overlay-reply" style={{ color: "var(--error)" }}>
                 {error}
               </div>
             ) : null}
-            {nowPlaying ? (
+            {nowPlaying && !pendingApproval ? (
               <div className="overlay-now">
                 <div className="overlay-now-title">{nowPlaying.title}</div>
                 <div className="overlay-now-sub">
-                  {[nowPlaying.artist, nowPlaying.playing === false ? "Paused" : "Playing"]
+                  {[
+                    nowPlaying.artist,
+                    nowPlaying.playing === false ? "Paused" : "Playing",
+                  ]
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
               </div>
             ) : null}
-            {reply.length > 280 ? (
+            {!pendingApproval && reply.length > 280 ? (
               <div className="overlay-actions">
                 <button
                   type="button"
@@ -340,9 +547,14 @@ export function OverlayApp() {
               </div>
             ) : null}
           </div>
-        )}
-        {!streaming && !reply && !error ? (
+        ) : null}
+        {!streaming && !reply && !error && !pendingApproval ? (
           <div className="overlay-hint">Enter to send · Esc to dismiss</div>
+        ) : null}
+        {pendingApproval ? (
+          <div className="overlay-hint">
+            Approve or Cancel · Esc hides overlay (approval stays pending)
+          </div>
         ) : null}
       </div>
     </div>

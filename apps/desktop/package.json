@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build-renderer.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/main/config-url.test.ts src/main/updater-state.test.ts src/main/launch-behavior.test.ts src/main/windows-audio.test.ts src/main/windows-capability.test.ts",
+    "test": "tsx --test src/main/config-url.test.ts src/main/updater-state.test.ts src/main/launch-behavior.test.ts src/main/windows-audio.test.ts src/main/windows-capability.test.ts src/main/overlay-approval.test.ts src/overlay/approval-copy.test.ts",
     "start": "electron .",
     "pack": "npm run build && node scripts/stage-pack.mjs && electron-builder --win --x64 --config electron-builder.yml --publish never",
     "dist": "npm run pack",

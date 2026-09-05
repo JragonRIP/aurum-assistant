@@ -43,6 +43,22 @@ declare global {
       ) => Promise<{ ok: boolean; error?: string }>;
       startOverlayChat?: (text: string) => Promise<{ id: string }>;
       cancelOverlayChat?: (id: string) => Promise<{ ok: boolean }>;
+      decideOverlayApproval?: (
+        approvalId: string,
+        decision: "approve" | "reject",
+      ) => Promise<{
+        ok: boolean;
+        status?: "APPROVED" | "REJECTED";
+        alreadyResolved?: boolean;
+        error?: string;
+        code?: string;
+        result?: {
+          success?: boolean;
+          message?: string;
+          error?: { code?: string; message?: string } | null;
+          activityLabel?: string;
+        };
+      }>;
       setOverlayExpanded?: (expanded: boolean) => Promise<{ ok: boolean }>;
       openInAurum?: () => Promise<{ ok: boolean }>;
       getUpdaterState?: () => Promise<UpdaterState>;

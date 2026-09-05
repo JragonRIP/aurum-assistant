@@ -4,6 +4,20 @@ import type { DeviceCredential } from "./credentials";
 
 export type OverlayChatHandle = { id: string };
 
+export type OverlayApprovalDecisionResult = {
+  ok: boolean;
+  status?: "APPROVED" | "REJECTED";
+  alreadyResolved?: boolean;
+  error?: string;
+  code?: string;
+  result?: {
+    success?: boolean;
+    message?: string;
+    error?: { code?: string; message?: string } | null;
+    activityLabel?: string;
+  };
+};
+
 type ActiveChat = {
   id: string;
   abort: AbortController;
@@ -52,6 +66,67 @@ export class OverlayChatBridge {
       chat.abort.abort();
       this.active.delete(id);
       this.onEvent({ id, done: true, error: "Cancelled" });
+    }
+  }
+
+  /**
+   * Resolve a CONFIRM approval via the same canonical backend as the web app.
+   * Executes stored validated args — does not re-send the NL request to Gemini.
+   */
+  async decideApproval(
+    approvalId: string,
+    decision: "approve" | "reject",
+  ): Promise<OverlayApprovalDecisionResult> {
+    const cred = this.getCred();
+    if (!cred) {
+      return { ok: false, error: "Device not paired", code: "DEVICE_OFFLINE" };
+    }
+    if (!/^[0-9a-f-]{36}$/i.test(approvalId)) {
+      return { ok: false, error: "Invalid approval", code: "NOT_FOUND" };
+    }
+    if (decision !== "approve" && decision !== "reject") {
+      return { ok: false, error: "Invalid decision" };
+    }
+
+    try {
+      const res = await fetch(
+        `${this.base(cred)}/api/devices/assistant/approvals/${approvalId}/decide`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: this.authHeader(cred),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        status?: "APPROVED" | "REJECTED";
+        alreadyResolved?: boolean;
+        error?: string;
+        code?: string;
+        result?: OverlayApprovalDecisionResult["result"];
+      };
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: sanitizeUserError(data.error, res.status),
+          code: data.code,
+        };
+      }
+      return {
+        ok: true,
+        status: data.status,
+        alreadyResolved: data.alreadyResolved,
+        result: data.result,
+      };
+    } catch {
+      return {
+        ok: false,
+        error: "Could not reach Aurum to resolve approval.",
+        code: "DEVICE_OFFLINE",
+      };
     }
   }
 
@@ -159,4 +234,15 @@ export class OverlayChatBridge {
       this.active.delete(id);
     }
   }
+}
+
+function sanitizeUserError(message: string | undefined, status: number): string {
+  if (status === 410) return "This approval expired.";
+  if (status === 409) return "This approval was already resolved.";
+  if (status === 404) return "Approval not found.";
+  if (!message) return "Could not update approval.";
+  if (/powershell|cmd\.exe|stack|token|secret/i.test(message)) {
+    return "Could not update approval.";
+  }
+  return message.length > 160 ? "Could not update approval." : message;
 }

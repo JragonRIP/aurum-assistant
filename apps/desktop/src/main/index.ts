@@ -514,6 +514,22 @@ function registerIpc(): void {
     return { ok: true };
   });
 
+  ipcMain.handle("aurum:overlay-approval-decide", async (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        approvalId: z.string().uuid(),
+        decision: z.enum(["approve", "reject"]),
+      })
+      .safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: "Invalid approval request" };
+    }
+    return ensureOverlayChat().decideApproval(
+      parsed.data.approvalId,
+      parsed.data.decision,
+    );
+  });
+
   ipcMain.handle("aurum:overlay-set-expanded", (_event, raw: unknown) => {
     const parsed = z.object({ expanded: z.boolean() }).safeParse(raw);
     if (!parsed.success) return { ok: false };

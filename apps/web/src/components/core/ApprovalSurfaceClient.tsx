@@ -33,7 +33,7 @@ export function ApprovalSurfaceClient(props: {
       };
       if (!res.ok) throw new Error(data.error ?? "Could not update approval");
       if (decision === "reject") {
-        setDone("Rejected.");
+        setDone("Cancelled.");
       } else if (data.result?.success) {
         setDone(data.result.message ?? "Approved and executed.");
       } else {

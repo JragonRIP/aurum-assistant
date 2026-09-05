@@ -64,6 +64,27 @@ const aurumDesktop = {
   cancelOverlayChat: (id: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:overlay-chat-cancel", { id }),
 
+  decideOverlayApproval: (
+    approvalId: string,
+    decision: "approve" | "reject",
+  ): Promise<{
+    ok: boolean;
+    status?: "APPROVED" | "REJECTED";
+    alreadyResolved?: boolean;
+    error?: string;
+    code?: string;
+    result?: {
+      success?: boolean;
+      message?: string;
+      error?: { code?: string; message?: string } | null;
+      activityLabel?: string;
+    };
+  }> =>
+    ipcRenderer.invoke("aurum:overlay-approval-decide", {
+      approvalId,
+      decision,
+    }),
+
   setOverlayExpanded: (expanded: boolean): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:overlay-set-expanded", { expanded }),
 

@@ -1,27 +1,33 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import {
+  isDeviceAuthError,
+  requireDeviceAuth,
+} from "@/lib/devices/auth";
 import { decideApproval } from "@/lib/approvals/decide";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const BodySchema = z.object({
   decision: z.enum(["approve", "reject"]),
 });
 
 /**
- * Authenticated user approves/rejects a pending CONFIRM tool.
- * Model cannot call this — only the signed-in user via Settings/Core UI.
+ * Device-authenticated approval decide (desktop overlay).
+ * Same canonical approvals table + execution path as the web Core UI.
+ * Never re-plans through the model — executes stored validated args.
  */
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireDeviceAuth(request);
+  if (isDeviceAuthError(auth)) return auth;
+
   const { id: approvalId } = await context.params;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!z.string().uuid().safeParse(approvalId).success) {
+    return NextResponse.json({ error: "Invalid approval id" }, { status: 400 });
   }
 
   const parsed = BodySchema.safeParse(await request.json().catch(() => ({})));
@@ -30,8 +36,8 @@ export async function POST(
   }
 
   const outcome = await decideApproval({
-    supabase,
-    userId: user.id,
+    supabase: auth.supabase,
+    userId: auth.device.user_id,
     approvalId,
     decision: parsed.data.decision,
   });

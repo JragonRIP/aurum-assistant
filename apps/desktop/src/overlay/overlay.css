@@ -174,3 +174,45 @@ body,
   color: var(--dim);
   font-size: 11px;
 }
+
+.overlay-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 2px;
+  border-top: 1px solid rgba(212, 175, 106, 0.14);
+}
+
+.overlay-approval-title {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.overlay-approval-detail {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.overlay-approval-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.overlay-btn-primary {
+  background: rgba(212, 175, 106, 0.12);
+  border-color: rgba(212, 175, 106, 0.45);
+}
+
+.overlay-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.overlay-btn-primary:hover:not(:disabled) {
+  border-color: rgba(212, 175, 106, 0.7);
+  background: rgba(212, 175, 106, 0.18);
+}
