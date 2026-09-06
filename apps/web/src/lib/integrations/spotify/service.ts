@@ -47,6 +47,11 @@ import {
   listMusicPreferences,
   upsertMusicPreference,
 } from "./music-preferences";
+import {
+  runVerifiedPlayPauseMutation,
+  runVerifiedSkipMutation,
+  snapshotFromPlayback,
+} from "./playback-mutation";
 
 export type SpotifyConnectionStatus =
   | "disconnected"
@@ -107,6 +112,17 @@ function toToolError(err: unknown): ToolResult {
       success: false,
       error: { code: err.code, message: err.message },
       activityLabel: "Spotify action failed",
+      data:
+        err.code === "RATE_LIMITED"
+          ? {
+              confirmation: "RATE_LIMITED",
+              ...(err.retryAfterMs != null
+                ? { retryAfterMs: err.retryAfterMs }
+                : {}),
+            }
+          : err.code === "NO_ACTIVE_DEVICE"
+            ? { confirmation: "NO_DEVICE" }
+            : { confirmation: "FAILED" },
     };
   }
   return {
@@ -116,6 +132,7 @@ function toToolError(err: unknown): ToolResult {
       message: err instanceof Error ? err.message : "Spotify action failed.",
     },
     activityLabel: "Spotify action failed",
+    data: { confirmation: "FAILED" },
   };
 }
 
@@ -589,6 +606,7 @@ export async function runSpotifyTool(opts: {
   action: string;
   input: Record<string, unknown>;
   signal?: AbortSignal;
+  executionId?: string;
   /** Opens Spotify desktop via Windows companion (at most once per recovery). */
   openSpotifyDesktop?: () => Promise<{ ok: boolean; message?: string }>;
   onActivity?: (label: string) => void;
@@ -912,45 +930,91 @@ export async function runSpotifyTool(opts: {
       }
 
       case "pause": {
-        await adapter.pause();
-        if (opts.conversationId) {
+        const result = await runVerifiedPlayPauseMutation({
+          action: "pause",
+          getState: async () =>
+            snapshotFromPlayback(await adapter.getPlaybackState()),
+          mutate: (deviceId) => adapter.pause(deviceId),
+          ensureDevice: () => recoverDevice(),
+          signal: opts.signal,
+          executionId: opts.executionId,
+          log: (event) => console.info("[aurum:spotify]", event),
+        });
+        if (result.success && opts.conversationId) {
           setMediaContext(opts.conversationId, { isPlaying: false });
         }
-        return {
-          success: true,
-          message: "Paused Spotify.",
-          activityLabel: "Paused Spotify",
-        };
+        return result;
       }
 
       case "resume": {
-        await adapter.resume();
-        if (opts.conversationId) {
+        const result = await runVerifiedPlayPauseMutation({
+          action: "resume",
+          getState: async () =>
+            snapshotFromPlayback(await adapter.getPlaybackState()),
+          mutate: (deviceId) => adapter.resume(deviceId),
+          ensureDevice: () => recoverDevice(),
+          signal: opts.signal,
+          executionId: opts.executionId,
+          log: (event) => console.info("[aurum:spotify]", event),
+        });
+        if (result.success && opts.conversationId) {
           setMediaContext(opts.conversationId, { isPlaying: true });
         }
-        return {
-          success: true,
-          message: "Resumed Spotify.",
-          activityLabel: "Resumed Spotify",
-        };
+        return result;
       }
 
       case "next": {
-        await adapter.next();
-        return {
-          success: true,
-          message: "Skipped to next track.",
-          activityLabel: "Skipped track",
-        };
+        const result = await runVerifiedSkipMutation({
+          direction: "next",
+          getState: async () =>
+            snapshotFromPlayback(await adapter.getPlaybackState()),
+          mutate: (deviceId) => adapter.next(deviceId),
+          ensureDevice: () => recoverDevice(),
+          signal: opts.signal,
+          executionId: opts.executionId,
+          log: (event) => console.info("[aurum:spotify]", event),
+        });
+        if (result.success && opts.conversationId) {
+          const current = (result.data as { currentTrack?: { name?: string | null; artists?: string[] } } | undefined)
+            ?.currentTrack;
+          if (current?.name) {
+            setMediaContext(opts.conversationId, {
+              isPlaying: true,
+              trackLabel: current.name,
+              artistLabel: current.artists?.join(", ") ?? null,
+            });
+          } else {
+            setMediaContext(opts.conversationId, { isPlaying: true });
+          }
+        }
+        return result;
       }
 
       case "previous": {
-        await adapter.previous();
-        return {
-          success: true,
-          message: "Went to previous track.",
-          activityLabel: "Previous track",
-        };
+        const result = await runVerifiedSkipMutation({
+          direction: "previous",
+          getState: async () =>
+            snapshotFromPlayback(await adapter.getPlaybackState()),
+          mutate: (deviceId) => adapter.previous(deviceId),
+          ensureDevice: () => recoverDevice(),
+          signal: opts.signal,
+          executionId: opts.executionId,
+          log: (event) => console.info("[aurum:spotify]", event),
+        });
+        if (result.success && opts.conversationId) {
+          const current = (result.data as { currentTrack?: { name?: string | null; artists?: string[] } } | undefined)
+            ?.currentTrack;
+          if (current?.name) {
+            setMediaContext(opts.conversationId, {
+              isPlaying: true,
+              trackLabel: current.name,
+              artistLabel: current.artists?.join(", ") ?? null,
+            });
+          } else {
+            setMediaContext(opts.conversationId, { isPlaying: true });
+          }
+        }
+        return result;
       }
 
       case "set_volume": {

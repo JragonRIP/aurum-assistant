@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/ai/rate-limit.test.ts src/lib/conversations/list-state.test.ts src/lib/conversations/streaming-text.test.ts src/lib/core/intent.test.ts src/lib/core/phase36.test.ts src/lib/core/presence-visual.test.ts src/lib/core/presence-layout.test.ts src/lib/agent/generation-outcome.test.ts src/lib/tasks/phase35.test.ts src/lib/devices/phase4.test.ts src/lib/integrations/phase41.test.ts src/lib/integrations/phase42.test.ts src/lib/integrations/spotify/device-recovery.test.ts src/lib/integrations/spotify/music-memory.test.ts src/lib/core/phase41-state.test.ts src/lib/approvals/decide.test.ts"
+    "test": "tsx --test src/lib/ai/rate-limit.test.ts src/lib/conversations/list-state.test.ts src/lib/conversations/streaming-text.test.ts src/lib/core/intent.test.ts src/lib/core/phase36.test.ts src/lib/core/presence-visual.test.ts src/lib/core/presence-layout.test.ts src/lib/core/presence-semantics.test.ts src/lib/agent/generation-outcome.test.ts src/lib/tasks/phase35.test.ts src/lib/devices/phase4.test.ts src/lib/integrations/phase41.test.ts src/lib/integrations/phase42.test.ts src/lib/integrations/spotify/device-recovery.test.ts src/lib/integrations/spotify/music-memory.test.ts src/lib/integrations/spotify/playback-mutation.test.ts src/lib/core/phase41-state.test.ts src/lib/approvals/decide.test.ts"
   },
   "dependencies": {
     "@aurum/ai": "*",

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import {
   AIProviderError,
@@ -189,7 +190,9 @@ export function createChatStream(options: {
   const encoder = new TextEncoder();
   const logTiming = timingLogsEnabled();
   const t0 = options.routeStartedAt ?? Date.now();
-  const generationId = options.generationId;
+  // Every user turn MUST have a unique generationId — missing ids collapse
+  // execution keys to "gen:…" and falsely replay prior ToolResults (e.g. skip).
+  const generationId = options.generationId ?? randomUUID();
   const configuredModel = getConfiguredTextModel();
 
   return new ReadableStream<Uint8Array>({
@@ -428,11 +431,11 @@ export function createChatStream(options: {
                 action,
                 input,
                 signal,
+                executionId: toolCtx?.currentExecutionId,
                 openSpotifyDesktop: async () => {
                   const executionId = `${
                     toolCtx?.currentExecutionId ??
-                    options.generationId ??
-                    "gen"
+                    generationId
                   }:open-spotify`;
                   const result = await dispatch(
                     "open_application",

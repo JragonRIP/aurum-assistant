@@ -15,6 +15,15 @@ export function isClarificationErrorCode(code: string | undefined): boolean {
   );
 }
 
+/** Soft failures that must not flash ERROR / invent hard failure copy. */
+export function isSoftToolErrorCode(code: string | undefined): boolean {
+  return (
+    isClarificationErrorCode(code) ||
+    code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+    code === "RATE_LIMITED"
+  );
+}
+
 export type ToolExecutorEvent =
   | {
       type: "tool_requested";

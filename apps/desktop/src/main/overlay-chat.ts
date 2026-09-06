@@ -202,6 +202,7 @@ export class OverlayChatBridge {
             conversationId,
             content: text,
             clientSentAt: Date.now(),
+            generationId: randomUUID(),
           }),
           signal,
         },

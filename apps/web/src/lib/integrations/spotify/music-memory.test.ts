@@ -273,11 +273,16 @@ describe("resource type isolation", () => {
   });
 
   it("clarification codes are classified separately from hard failures", async () => {
-    const { isClarificationErrorCode } = await import("@aurum/tools");
+    const { isClarificationErrorCode, isSoftToolErrorCode } = await import(
+      "@aurum/tools"
+    );
     assert.equal(isClarificationErrorCode("AMBIGUOUS_TRACK"), true);
     assert.equal(isClarificationErrorCode("AMBIGUOUS_PLAYLIST"), true);
     assert.equal(isClarificationErrorCode("EXECUTION_FAILED"), false);
     assert.equal(isClarificationErrorCode("NO_ACTIVE_DEVICE"), false);
+    assert.equal(isSoftToolErrorCode("PLAYBACK_CHANGE_NOT_CONFIRMED"), true);
+    assert.equal(isSoftToolErrorCode("RATE_LIMITED"), true);
+    assert.equal(isSoftToolErrorCode("EXECUTION_FAILED"), false);
   });
 });
 

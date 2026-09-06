@@ -42,13 +42,32 @@ export class SpotifyApiError extends Error {
     readonly code: ToolErrorCode,
     message: string,
     readonly status?: number,
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "SpotifyApiError";
   }
 }
 
-function mapHttpError(status: number, bodyText: string): SpotifyApiError {
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const trimmed = header.trim();
+  const asInt = Number(trimmed);
+  if (Number.isFinite(asInt) && asInt >= 0) {
+    return Math.min(Math.round(asInt * 1000), 60_000);
+  }
+  const when = Date.parse(trimmed);
+  if (Number.isFinite(when)) {
+    return Math.min(Math.max(0, when - Date.now()), 60_000);
+  }
+  return undefined;
+}
+
+function mapHttpError(
+  status: number,
+  bodyText: string,
+  retryAfterHeader?: string | null,
+): SpotifyApiError {
   // Never include raw body tokens; sanitize message only
   const lower = bodyText.toLowerCase();
   if (status === 401) {
@@ -79,10 +98,16 @@ function mapHttpError(status: number, bodyText: string): SpotifyApiError {
     return new SpotifyApiError("NOT_FOUND", "Spotify resource not found.", status);
   }
   if (status === 429) {
+    const retryAfterMs = parseRetryAfterMs(retryAfterHeader ?? null);
+    const seconds =
+      retryAfterMs != null ? Math.max(1, Math.ceil(retryAfterMs / 1000)) : null;
     return new SpotifyApiError(
       "RATE_LIMITED",
-      "Spotify rate limit reached. Try again shortly.",
+      seconds
+        ? `Spotify rate limit reached. Try again in about ${seconds}s.`
+        : "Spotify rate limit reached. Try again shortly.",
       status,
+      retryAfterMs,
     );
   }
   if (status >= 500) {
@@ -118,7 +143,11 @@ async function spotifyFetch(
 async function assertOk(res: Response): Promise<void> {
   if (res.ok || res.status === 204) return;
   const text = await res.text().catch(() => "");
-  throw mapHttpError(res.status, text.slice(0, 400));
+  throw mapHttpError(
+    res.status,
+    text.slice(0, 400),
+    res.headers.get("Retry-After"),
+  );
 }
 
 export class SpotifyAdapter {

@@ -454,20 +454,31 @@ export function buildFallbackFromToolResults(results: ToolResult[]): string {
   const onlyClarificationFailures =
     failures.length > 0 &&
     failures.every((r) => isClarificationErrorCode(r.error?.code));
+  const onlySoftFailures =
+    failures.length > 0 &&
+    failures.every((r) => isSoftPlaybackOrClarification(r.error?.code));
 
   // Committed success wins over later/earlier AMBIGUOUS_* clarifications.
   if (successes.length > 0 && (failures.length === 0 || onlyClarificationFailures)) {
     const lastSuccess = successes[successes.length - 1]!;
-    const msg = (lastSuccess.message ?? lastSuccess.activityLabel ?? "Done.").trim();
-    if (msg) return msg;
+    // Never treat unconfirmed playback mutations as committed success copy.
+    if (!isUnconfirmedPlaybackResult(lastSuccess)) {
+      const msg = (lastSuccess.message ?? lastSuccess.activityLabel ?? "Done.").trim();
+      if (msg) return msg;
+    }
   }
 
   // Prefer the last successful tool message — preserves primary intent
   // (e.g. play after open) without concatenating intermediate noise.
   const last = results[results.length - 1]!;
-  if (last.success) {
+  if (last.success && !isUnconfirmedPlaybackResult(last)) {
     const msg = (last.message ?? last.activityLabel ?? "Done.").trim();
     if (msg) return msg;
+  }
+
+  // Soft playback / clarification failures: surface the message (no ERROR).
+  if (onlySoftFailures && last.error?.message) {
+    return last.error.message.trim();
   }
 
   // Clarification-only failures: surface the clarification message (no mutation yet).
@@ -479,9 +490,9 @@ export function buildFallbackFromToolResults(results: ToolResult[]): string {
   const seen = new Set<string>();
   for (const r of results) {
     let msg: string | undefined;
-    if (r.success) {
+    if (r.success && !isUnconfirmedPlaybackResult(r)) {
       msg = r.message ?? r.activityLabel ?? "Done.";
-    } else if (isClarificationErrorCode(r.error?.code)) {
+    } else if (isSoftPlaybackOrClarification(r.error?.code)) {
       msg = r.error?.message;
     } else if (r.error) {
       msg = r.error.message;
@@ -501,6 +512,38 @@ export function buildFallbackFromToolResults(results: ToolResult[]): string {
   return lines.join(" ");
 }
 
+function isUnconfirmedPlaybackResult(result: ToolResult): boolean {
+  const data = result.data as { confirmed?: boolean; confirmation?: string } | undefined;
+  if (data?.confirmed === false) return true;
+  if (data?.confirmation === "ACCEPTED_UNCONFIRMED") return true;
+  return result.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED";
+}
+
+function isSoftPlaybackOrClarification(code: string | undefined): boolean {
+  return (
+    isClarificationErrorCode(code) ||
+    code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+    code === "RATE_LIMITED"
+  );
+}
+
+export function buildToolExecutionId(parts: {
+  generationId?: string;
+  toolCallId?: string;
+  toolName: string;
+  round: number;
+  index: number;
+}): string {
+  // Never fall back to bare "gen" — that collapses skips across user turns.
+  const gen =
+    parts.generationId?.trim() ||
+    `orphan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  if (parts.toolCallId) {
+    return `${gen}:${parts.toolCallId}`;
+  }
+  return `${gen}:${parts.toolName}:r${parts.round}:i${parts.index}`;
+}
+
 function buildExecutionId(parts: {
   generationId?: string;
   toolCallId?: string;
@@ -508,10 +551,7 @@ function buildExecutionId(parts: {
   round: number;
   index: number;
 }): string {
-  if (parts.toolCallId) {
-    return `${parts.generationId ?? "gen"}:${parts.toolCallId}`;
-  }
-  return `${parts.generationId ?? "gen"}:${parts.toolName}:r${parts.round}:i${parts.index}`;
+  return buildToolExecutionId(parts);
 }
 
 function maybeEmitSurface(

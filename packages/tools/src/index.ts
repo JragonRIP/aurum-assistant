@@ -32,6 +32,7 @@ export {
   createInMemoryDataAccess,
   resolveToolActivityLabel,
   isClarificationErrorCode,
+  isSoftToolErrorCode,
 } from "./executor";
 export type { ToolExecutorEvent, ToolExecutorHooks } from "./executor";
 export { zodToJsonSchema } from "./zod-json";

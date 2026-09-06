@@ -142,6 +142,7 @@ export function useAurumSession() {
   const [surfaceFiles, setSurfaceFiles] = useState<SurfaceFile[]>([]);
   const [acting, setActing] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [awaitingUser, setAwaitingUser] = useState(false);
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(
     null,
   );
@@ -333,6 +334,7 @@ export function useAurumSession() {
     setStreaming(true);
     setActing(false);
     setAwaitingApproval(false);
+    setAwaitingUser(false);
     setError(null);
     setResponseWarning(null);
     setAllowFullRetry(false);
@@ -481,8 +483,22 @@ export function useAurumSession() {
             const id = toolActivityIds.get(key);
             toolActivityIds.delete(key);
             setActing(toolActivityIds.size > 0);
+            const soft =
+              event.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+              event.error?.code === "RATE_LIMITED" ||
+              event.error?.code === "APPROVAL_REQUIRED";
             const detail =
               event.display?.detail ?? event.error?.message ?? "Failed";
+            if (soft) {
+              if (id) {
+                patchActivity(id, {
+                  state: "done",
+                  label: event.error?.code === "RATE_LIMITED" ? "WAIT" : "CHECK",
+                  detail,
+                });
+              }
+              continue;
+            }
             if (id) {
               patchActivity(id, {
                 state: "error",
@@ -504,6 +520,8 @@ export function useAurumSession() {
             const id = toolActivityIds.get(key);
             toolActivityIds.delete(key);
             setActing(toolActivityIds.size > 0);
+            setAwaitingUser(true);
+            setError(null);
             const detail =
               event.display?.detail ??
               event.error?.message ??
@@ -511,12 +529,12 @@ export function useAurumSession() {
             if (id) {
               patchActivity(id, {
                 state: "success",
-                label: "CLARIFY",
+                label: "NEED YOUR INPUT",
                 detail,
               });
             } else {
               pushActivity({
-                label: "CLARIFY",
+                label: "NEED YOUR INPUT",
                 detail,
                 state: "success",
               });
@@ -1036,6 +1054,7 @@ export function useAurumSession() {
     streaming,
     acting,
     awaitingApproval,
+    awaitingUser,
     pendingApprovalId,
     pendingApprovalLabel,
     clearPendingApproval: () => {

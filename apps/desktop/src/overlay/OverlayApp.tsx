@@ -48,15 +48,20 @@ function mapPresence(opts: {
   streaming: boolean;
   acting: boolean;
   awaitingApproval: boolean;
+  awaitingUser: boolean;
   error: string | null;
   offline: boolean;
 }): { state: PresenceState; presentation: PresencePresentation } {
   if (opts.offline) return { state: "OFFLINE", presentation: "offline" };
-  if (opts.error && !opts.streaming && !opts.awaitingApproval) {
-    return { state: "ERROR", presentation: "error" };
-  }
+  // Waiting for the user outranks error — pending input is not failure
   if (opts.awaitingApproval) {
     return { state: "WAITING_FOR_APPROVAL", presentation: "hold" };
+  }
+  if (opts.awaitingUser) {
+    return { state: "WAITING_FOR_USER", presentation: "awaiting" };
+  }
+  if (opts.error && !opts.streaming) {
+    return { state: "ERROR", presentation: "error" };
   }
   if (opts.acting) return { state: "ACTING", presentation: "acting" };
   if (opts.streaming) return { state: "THINKING", presentation: "thinking" };
@@ -79,9 +84,11 @@ export function OverlayApp() {
   const [expanded, setExpanded] = useState(false);
   const [approvalQueue, setApprovalQueue] = useState<PendingApproval[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
+  const [awaitingUser, setAwaitingUser] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
   const inFlightTools = useRef(new Set<string>());
   const awaitingApprovalRef = useRef(false);
+  const awaitingUserRef = useRef(false);
   const replyRef = useRef("");
 
   const pendingApproval = approvalQueue[0] ?? null;
@@ -90,6 +97,10 @@ export function OverlayApp() {
   useEffect(() => {
     awaitingApprovalRef.current = awaitingApproval;
   }, [awaitingApproval]);
+
+  useEffect(() => {
+    awaitingUserRef.current = awaitingUser;
+  }, [awaitingUser]);
 
   useEffect(() => {
     replyRef.current = reply;
@@ -155,6 +166,7 @@ export function OverlayApp() {
     streaming,
     acting,
     awaitingApproval,
+    awaitingUser,
     error,
     offline: paired && !online && !streaming && !awaitingApproval,
   });
@@ -264,15 +276,58 @@ export function OverlayApp() {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
-      // APPROVAL_REQUIRED is also signaled via approval_required — never ERROR
+      // APPROVAL_REQUIRED / soft playback / clarifications — never ERROR
       if (
         event.error?.code === "APPROVAL_REQUIRED" ||
-        awaitingApprovalRef.current
+        event.error?.code === "AMBIGUOUS_TRACK" ||
+        event.error?.code === "AMBIGUOUS_PLAYLIST" ||
+        event.error?.code === "AMBIGUOUS_MATCH" ||
+        event.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+        event.error?.code === "RATE_LIMITED" ||
+        awaitingApprovalRef.current ||
+        awaitingUserRef.current
       ) {
+        if (
+          event.error?.code === "AMBIGUOUS_TRACK" ||
+          event.error?.code === "AMBIGUOUS_PLAYLIST" ||
+          event.error?.code === "AMBIGUOUS_MATCH"
+        ) {
+          setAwaitingUser(true);
+          setError(null);
+          setStatus("NEED YOUR INPUT");
+          if (event.error?.message) {
+            setReply(event.error.message);
+            setExpanded(true);
+          }
+        } else if (
+          event.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+          event.error?.code === "RATE_LIMITED"
+        ) {
+          setError(null);
+          if (event.error?.message) {
+            setReply(event.error.message);
+            setExpanded(true);
+          }
+        }
         return;
       }
       setError(event.error?.message ?? event.display?.detail ?? "Action failed");
       setStatus("ERROR");
+      return;
+    }
+    if (event.type === "clarification_needed") {
+      const key = event.tool ?? "tool";
+      inFlightTools.current.delete(key);
+      setActing(inFlightTools.current.size > 0);
+      setAwaitingUser(true);
+      setError(null);
+      setStatus("NEED YOUR INPUT");
+      const detail =
+        event.display?.detail ??
+        event.error?.message ??
+        "Which one did you mean?";
+      setReply(detail);
+      setExpanded(true);
       return;
     }
     if (event.type === "delta" && event.text) {
@@ -284,12 +339,22 @@ export function OverlayApp() {
       if (event.message?.content && !replyRef.current) {
         setReply(event.message.content);
       }
-      if (event.outcome?.warning && !awaitingApprovalRef.current) {
+      if (
+        event.outcome?.warning &&
+        !awaitingApprovalRef.current &&
+        !awaitingUserRef.current
+      ) {
         setError(event.outcome.warning);
       }
       if (awaitingApprovalRef.current) {
         setStatus("WAITING FOR APPROVAL");
         setActing(false);
+        return;
+      }
+      if (awaitingUserRef.current) {
+        setStatus("NEED YOUR INPUT");
+        setActing(false);
+        setError(null);
         return;
       }
       setSuccessFlash(true);
@@ -298,7 +363,7 @@ export function OverlayApp() {
       return;
     }
     if (event.type === "error") {
-      if (awaitingApprovalRef.current) return;
+      if (awaitingApprovalRef.current || awaitingUserRef.current) return;
       setError(event.error?.message ?? "Something went wrong");
       setStatus("ERROR");
     }
@@ -389,6 +454,7 @@ export function OverlayApp() {
     setCommand("");
     setReply("");
     setError(null);
+    setAwaitingUser(false);
     setStreaming(true);
     setActing(false);
     setStatus("THINKING");
@@ -408,11 +474,14 @@ export function OverlayApp() {
         setStreaming(false);
         setActing(false);
         inFlightTools.current.clear();
-        if (payload.error && !awaitingApprovalRef.current) {
+        if (awaitingApprovalRef.current) {
+          setStatus("WAITING FOR APPROVAL");
+        } else if (awaitingUserRef.current) {
+          setStatus("NEED YOUR INPUT");
+          setError(null);
+        } else if (payload.error) {
           setError(payload.error);
           setStatus("ERROR");
-        } else if (awaitingApprovalRef.current) {
-          setStatus("WAITING FOR APPROVAL");
         } else if (!error) {
           setStatus("READY");
         }
@@ -471,11 +540,19 @@ export function OverlayApp() {
           />
         </div>
         <div
-          className={`overlay-status${error && !streaming && !awaitingApproval ? " error" : ""}`}
+          className={`overlay-status${
+            error && !streaming && !awaitingApproval && !awaitingUser
+              ? " error"
+              : ""
+          }`}
         >
-          {error && !streaming && !awaitingApproval
+          {error && !streaming && !awaitingApproval && !awaitingUser
             ? "ERROR"
-            : status}
+            : awaitingApproval
+              ? "WAITING FOR APPROVAL"
+              : awaitingUser
+                ? "NEED YOUR INPUT"
+                : status}
         </div>
         <input
           ref={inputRef}

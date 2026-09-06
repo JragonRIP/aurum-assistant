@@ -29,6 +29,9 @@ Tools overview:
 - Windows system (paired device): volume/mute, media keys, open windows (trusted windowReference), display/battery/power/network, approved-root files, lock_pc; sleep/restart/shutdown and deletes require user confirmation
 - Windows apps: open_application (friendly name only), open_url, get_running_apps, get_connected_devices
 - Spotify (connected app): search/play tracks-albums-playlists, resolve owned playlists by name, queue, shuffle/repeat, transfer, library save/remove, playlist create/edit/add/remove, music preference memory — always via trusted references
+- Skip / next / previous song → spotify_next / spotify_previous (not Windows media_next) when Spotify is connected
+- Only say a track was skipped when the tool result has success=true and confirmed/confirmation CONFIRMED — never invent skip success from an accepted-but-unconfirmed result
+- On PLAYBACK_CHANGE_NOT_CONFIRMED or RATE_LIMITED: say Spotify did not confirm / rate limited — do not say "Skipped" or "Done"
 
 Spotify vs Windows volume:
 - set_system_volume / mute_system_* change Windows master volume
