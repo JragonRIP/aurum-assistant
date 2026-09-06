@@ -3,6 +3,11 @@ import {
   AurumPresence,
   type PresencePresentation,
   type PresenceState,
+  defaultPhaseActivity,
+  isResearchTool,
+  resolveWorkingActivity,
+  resolveWorkingHeadline,
+  shouldShowIdlePrompt,
 } from "@aurum/ui";
 import {
   approvalConfirmVerb,
@@ -101,6 +106,8 @@ export function OverlayApp() {
   const [layoutFull, setLayoutFull] = useState(false);
   const [sources, setSources] = useState<ResearchSource[]>([]);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [activityLine, setActivityLine] = useState<string | null>(null);
+  const [researching, setResearching] = useState(false);
   const [shellVisible, setShellVisible] = useState(false);
   const [shellHiding, setShellHiding] = useState(false);
   const [approvalQueue, setApprovalQueue] = useState<PendingApproval[]>([]);
@@ -114,9 +121,15 @@ export function OverlayApp() {
   const bodyRef = useRef<HTMLDivElement>(null);
   const layoutTimer = useRef<number | null>(null);
   const hideAcked = useRef(false);
+  const activityFadeRef = useRef<number | null>(null);
 
   const pendingApproval = approvalQueue[0] ?? null;
   const awaitingApproval = Boolean(pendingApproval);
+
+  const setActivitySmooth = useCallback((next: string | null) => {
+    if (activityFadeRef.current) window.clearTimeout(activityFadeRef.current);
+    setActivityLine(next);
+  }, []);
 
   useEffect(() => {
     awaitingApprovalRef.current = awaitingApproval;
@@ -196,6 +209,8 @@ export function OverlayApp() {
         abortRef.current?.();
         setStreaming(false);
         setActing(false);
+        setResearching(false);
+        setActivitySmooth(null);
         inFlightTools.current.clear();
         setStatus("READY");
         return;
@@ -280,6 +295,7 @@ export function OverlayApp() {
 
   function applyEvent(event: StreamEvent) {
     if (event.type === "approval_required") {
+      setActivitySmooth(null);
       enqueueApproval(event);
       return;
     }
@@ -290,8 +306,16 @@ export function OverlayApp() {
       }
       if (event.state === "thinking" || event.state === "responding") {
         if (inFlightTools.current.size === 0) setActing(false);
-        if (event.state === "thinking") setStatus("THINKING");
-        if (event.state === "responding") setStatus("RESPONDING");
+        if (event.state === "thinking") {
+          if (inFlightTools.current.size === 0 && !replyRef.current) {
+            setActivitySmooth(defaultPhaseActivity("thinking"));
+          } else if (inFlightTools.current.size === 0 && replyRef.current) {
+            setActivitySmooth("Putting that together...");
+          }
+        }
+        if (event.state === "responding") {
+          setActivitySmooth(null);
+        }
       }
       return;
     }
@@ -300,17 +324,32 @@ export function OverlayApp() {
       const key = event.tool ?? "tool";
       inFlightTools.current.add(key);
       setActing(true);
-      setStatus((event.display?.label ?? "WORKING").toUpperCase());
       setExpanded(true);
+      setResearching(
+        [...inFlightTools.current].some((t) => isResearchTool(t)),
+      );
+      setActivitySmooth(
+        resolveWorkingActivity({
+          tool: event.tool,
+          displayLabel: event.display?.label ?? event.display?.detail,
+        }),
+      );
       return;
     }
     if (event.type === "tool_succeeded") {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
+      setResearching(
+        [...inFlightTools.current].some((t) => isResearchTool(t)),
+      );
       if (!awaitingApprovalRef.current) {
-        const label = (event.display?.label ?? "DONE").toUpperCase();
-        setStatus(label);
+        if (inFlightTools.current.size === 0) {
+          setActivitySmooth("Putting that together...");
+        } else {
+          const nextTool = [...inFlightTools.current][0];
+          setActivitySmooth(resolveWorkingActivity({ tool: nextTool }));
+        }
       }
       const data = event.data;
       if (data && typeof data === "object") {
@@ -343,7 +382,7 @@ export function OverlayApp() {
             if (!row || typeof row !== "object") continue;
             const item = row as Record<string, unknown>;
             const url = typeof item.url === "string" ? item.url : "";
-            const title = typeof item.title === "string" ? item.title : "";
+            const titleText = typeof item.title === "string" ? item.title : "";
             const domain =
               typeof item.domain === "string"
                 ? item.domain
@@ -356,8 +395,8 @@ export function OverlayApp() {
                       }
                     })()
                   : "";
-            if (!url || !title) continue;
-            nextSources.push({ title, url, domain });
+            if (!url || !titleText) continue;
+            nextSources.push({ title: titleText, url, domain });
           }
           if (nextSources.length > 0) {
             setSources(nextSources);
@@ -371,6 +410,9 @@ export function OverlayApp() {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
+      setResearching(
+        [...inFlightTools.current].some((t) => isResearchTool(t)),
+      );
       // APPROVAL_REQUIRED / soft playback / clarifications — never ERROR
       if (
         event.error?.code === "APPROVAL_REQUIRED" ||
@@ -389,7 +431,7 @@ export function OverlayApp() {
         ) {
           setAwaitingUser(true);
           setError(null);
-          setStatus("NEED YOUR INPUT");
+          setActivitySmooth(null);
           if (event.error?.message) {
             setReply(event.error.message);
             setExpanded(true);
@@ -399,6 +441,7 @@ export function OverlayApp() {
           event.error?.code === "RATE_LIMITED"
         ) {
           setError(null);
+          setActivitySmooth(null);
           if (event.error?.message) {
             setReply(event.error.message);
             setExpanded(true);
@@ -406,17 +449,20 @@ export function OverlayApp() {
         }
         return;
       }
+      setActivitySmooth(null);
       setError(event.error?.message ?? event.display?.detail ?? "Action failed");
-      setStatus("ERROR");
       return;
     }
     if (event.type === "clarification_needed") {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
       setActing(inFlightTools.current.size > 0);
+      setResearching(
+        [...inFlightTools.current].some((t) => isResearchTool(t)),
+      );
       setAwaitingUser(true);
       setError(null);
-      setStatus("NEED YOUR INPUT");
+      setActivitySmooth(null);
       const detail =
         event.display?.detail ??
         event.error?.message ??
@@ -426,11 +472,13 @@ export function OverlayApp() {
       return;
     }
     if (event.type === "delta" && event.text) {
+      setActivitySmooth(null);
       setReply((prev) => prev + event.text!);
       setExpanded(true);
       return;
     }
     if (event.type === "done") {
+      setActivitySmooth(null);
       if (event.message?.content && !replyRef.current) {
         setReply(event.message.content);
       }
@@ -442,25 +490,22 @@ export function OverlayApp() {
         setError(event.outcome.warning);
       }
       if (awaitingApprovalRef.current) {
-        setStatus("WAITING FOR APPROVAL");
         setActing(false);
         return;
       }
       if (awaitingUserRef.current) {
-        setStatus("NEED YOUR INPUT");
         setActing(false);
         setError(null);
         return;
       }
       setSuccessFlash(true);
       window.setTimeout(() => setSuccessFlash(false), 700);
-      setStatus("READY");
       return;
     }
     if (event.type === "error") {
       if (awaitingApprovalRef.current || awaitingUserRef.current) return;
+      setActivitySmooth(null);
       setError(event.error?.message ?? "Something went wrong");
-      setStatus("ERROR");
     }
   }
 
@@ -553,11 +598,13 @@ export function OverlayApp() {
     setStreaming(true);
     setActing(false);
     setStatus("THINKING");
+    setActivitySmooth(defaultPhaseActivity("thinking"));
     setExpanded(true);
     setLayoutFull(false);
     setSources([]);
     setSourcesOpen(false);
     setApprovalQueue([]);
+    setResearching(false);
     inFlightTools.current.clear();
 
     const handle = await window.aurumDesktop.startOverlayChat(text);
@@ -572,6 +619,8 @@ export function OverlayApp() {
         setStreaming(false);
         setActing(false);
         inFlightTools.current.clear();
+        setResearching(false);
+        setActivitySmooth(null);
         if (awaitingApprovalRef.current) {
           setStatus("WAITING FOR APPROVAL");
         } else if (awaitingUserRef.current) {
@@ -628,20 +677,52 @@ export function OverlayApp() {
     );
   }
 
+  const showIdlePrompt = shouldShowIdlePrompt({
+    streaming,
+    acting,
+    awaitingApproval,
+    awaitingUser,
+    error: Boolean(error) && !streaming && !awaitingApproval && !awaitingUser,
+  });
+
+  const workingHeadline =
+    status === "CONNECT" ||
+    status === "OFFLINE" ||
+    status === "PAIRING" ||
+    status === "FAILED"
+      ? status
+      : resolveWorkingHeadline({
+          awaitingApproval,
+          awaitingUser,
+          error: Boolean(error) && !streaming && !awaitingApproval && !awaitingUser,
+          researching,
+          acting,
+          streaming,
+          hasReply: Boolean(reply),
+        });
+
   const showBody =
-    reply || error || nowPlaying || streaming || pendingApproval || sources.length > 0;
+    reply ||
+    error ||
+    nowPlaying ||
+    streaming ||
+    pendingApproval ||
+    sources.length > 0 ||
+    Boolean(activityLine);
   const offerShowFull = shouldOfferShowFull(reply);
   const layoutClass = !expanded
     ? "layout-idle"
     : layoutFull
       ? "layout-full"
       : "layout-compact";
+  const inputSecondary =
+    streaming || acting || awaitingApproval || awaitingUser;
 
   return (
     <div
       className={`overlay-shell ${layoutClass}${shellVisible ? " visible" : ""}${
         shellHiding ? " hiding" : ""
-      }`}
+      }${inputSecondary ? " is-working" : ""}`}
     >
       <div className="overlay-panel">
         <div className="overlay-core">
@@ -658,19 +739,19 @@ export function OverlayApp() {
               : ""
           }`}
         >
-          {error && !streaming && !awaitingApproval && !awaitingUser
-            ? "ERROR"
-            : awaitingApproval
-              ? "WAITING FOR APPROVAL"
-              : awaitingUser
-                ? "NEED YOUR INPUT"
-                : status}
+          {workingHeadline}
         </div>
+        {activityLine && !awaitingApproval && !reply ? (
+          <div className="overlay-activity" key={activityLine}>
+            {activityLine}
+          </div>
+        ) : null}
         <input
           ref={inputRef}
-          className="overlay-command"
+          className={`overlay-command${inputSecondary ? " is-secondary" : ""}`}
           value={command}
-          placeholder="What do you need?"
+          placeholder={showIdlePrompt ? "What do you need?" : ""}
+          aria-label={showIdlePrompt ? "What do you need?" : "Ask Aurum"}
           disabled={streaming || awaitingApproval}
           onChange={(e) => setCommand(e.target.value)}
           onKeyDown={(e) => {
@@ -679,6 +760,17 @@ export function OverlayApp() {
         />
         {showBody ? (
           <div className="overlay-body" ref={bodyRef}>
+            {activityLine &&
+            !awaitingApproval &&
+            reply &&
+            (streaming || acting) ? (
+              <div
+                className="overlay-activity overlay-activity--inline"
+                key={`inline-${activityLine}`}
+              >
+                {activityLine}
+              </div>
+            ) : null}
             {pendingApproval ? (
               <div className="overlay-approval" role="dialog" aria-modal="true">
                 <div className="overlay-approval-title">
@@ -786,7 +878,7 @@ export function OverlayApp() {
             ) : null}
           </div>
         ) : null}
-        {!streaming && !reply && !error && !pendingApproval ? (
+        {showIdlePrompt && !streaming && !reply && !error && !pendingApproval ? (
           <div className="overlay-hint">Enter to send · Esc to dismiss</div>
         ) : null}
         {pendingApproval ? (

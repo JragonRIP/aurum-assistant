@@ -21,6 +21,15 @@ export type {
 export { presenceSpinTargets, lerpSpin } from "./presence-spin";
 export type { PresenceSpinTargets } from "./presence-spin";
 export {
+  shouldShowIdlePrompt,
+  isResearchTool,
+  resolveWorkingActivity,
+  defaultPhaseActivity,
+  resolveWorkingHeadline,
+  synthesizeWorkingPhase,
+} from "./working-activity";
+export type { WorkingPhase } from "./working-activity";
+export {
   PRESENCE_LAYER_IDS,
   PRESENCE_STATES,
   PRESENCE_USES_RASTER_ASSET,

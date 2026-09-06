@@ -61,4 +61,18 @@ describe("overlay open-in-aurum + hide animation contracts", () => {
     assert.match(overlay, /setLayoutFull/);
     assert.match(overlay, /WAITING_FOR_APPROVAL/);
   });
+
+  it("working UI hides idle prompt and shows activity from tools", () => {
+    const overlay = fs.readFileSync(
+      path.join(root, "apps/desktop/src/overlay/OverlayApp.tsx"),
+      "utf8",
+    );
+    assert.match(overlay, /shouldShowIdlePrompt/);
+    assert.match(overlay, /resolveWorkingActivity/);
+    assert.match(overlay, /activityLine/);
+    assert.match(overlay, /defaultPhaseActivity\("thinking"\)/);
+    assert.match(overlay, /showIdlePrompt \? "What do you need\?" : ""/);
+    assert.match(overlay, /AurumPresence/);
+    assert.doesNotMatch(overlay, /chain.of.thought|hidden reasoning/i);
+  });
 });

@@ -11,8 +11,10 @@ export {
 export {
   AURUM_SYSTEM_INSTRUCTIONS,
   AURUM_SPOKEN_STYLE,
+  DEFAULT_RESPONSE_DETAIL_PREFERENCE,
   buildSystemPrompt,
 } from "./personality";
+export type { ResponseDetailPreference } from "./personality";
 export {
   buildConversationContext,
   toResponsesInput,

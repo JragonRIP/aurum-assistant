@@ -141,6 +141,8 @@ export function resolveToolActivityLabel(
   if (toolName === "sleep_pc") return "Sleeping PC";
   if (toolName === "shutdown_pc") return "Shutting down PC";
   if (toolName === "restart_pc") return "Restarting PC";
+  if (toolName === "web_search") return "Searching the web";
+  if (toolName === "web_read_page") return "Reading sources";
   return fallback;
 }
 
