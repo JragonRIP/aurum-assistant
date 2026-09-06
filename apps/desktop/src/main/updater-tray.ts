@@ -24,7 +24,7 @@ export function buildTrayUpdateMenu(
 
   if (state.status === "downloaded") {
     return {
-      primaryLabel: "Restart to Update Aurum",
+      primaryLabel: "Restart to Update Aurum Console",
       primaryAction: "install",
       statusLabel: `Update: ${updaterStatusLabel(state)}`,
     };

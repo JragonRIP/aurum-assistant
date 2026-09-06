@@ -109,7 +109,7 @@ describe("commit message and tag naming", () => {
   });
   it("formats annotated tag name and message", () => {
     assert.equal(releaseTagName("0.2.4"), "v0.2.4");
-    assert.equal(releaseTagMessage("0.2.4"), "Aurum desktop 0.2.4");
+    assert.equal(releaseTagMessage("0.2.4"), "Aurum Console 0.2.4");
   });
 });
 
@@ -163,8 +163,8 @@ describe("status command", () => {
 describe("artifact paths + ls-remote parse", () => {
   it("names installer, blockmap, latest.yml", () => {
     assert.deepEqual(releaseArtifactNames("0.2.4"), {
-      installer: "Aurum-Setup-0.2.4.exe",
-      blockmap: "Aurum-Setup-0.2.4.exe.blockmap",
+      installer: "Aurum-Console-Setup-0.2.4.exe",
+      blockmap: "Aurum-Console-Setup-0.2.4.exe.blockmap",
       latestYml: "latest.yml",
     });
   });

@@ -50,8 +50,8 @@ export function bumpSemver(version, kind) {
 
 export function releaseArtifactNames(version) {
   return {
-    installer: `Aurum-Setup-${version}.exe`,
-    blockmap: `Aurum-Setup-${version}.exe.blockmap`,
+    installer: `Aurum-Console-Setup-${version}.exe`,
+    blockmap: `Aurum-Console-Setup-${version}.exe.blockmap`,
     latestYml: "latest.yml",
   };
 }
@@ -65,7 +65,7 @@ export function releaseTagName(version) {
 }
 
 export function releaseTagMessage(version) {
-  return `Aurum desktop ${version}`;
+  return `Aurum Console ${version}`;
 }
 
 export function assertWorkingTreeClean(statusPorcelain) {

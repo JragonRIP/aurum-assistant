@@ -43,6 +43,7 @@ const stagedPkg = {
   version: pkg.version,
   description: pkg.description,
   author: pkg.author ?? "Aurum",
+  description: pkg.description ?? "Aurum Console",
   private: true,
   main: "dist/main/index.js",
   repository: pkg.repository ?? {

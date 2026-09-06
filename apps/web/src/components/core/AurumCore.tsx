@@ -91,9 +91,12 @@ export function AurumCore({ aiConfigured, status }: AurumCoreProps) {
     streaming: session.streaming,
     acting: session.acting,
     awaitingApproval: session.awaitingApproval,
+    awaitingUser: session.awaitingUser,
     error: presenceShowsError({
       error: session.error,
       streaming: session.streaming,
+      awaitingApproval: session.awaitingApproval,
+      awaitingUser: session.awaitingUser,
     }),
   });
   const presence = useDevPresenceOverride(livePresence);

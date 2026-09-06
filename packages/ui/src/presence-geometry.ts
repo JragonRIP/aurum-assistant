@@ -32,6 +32,7 @@ export const PRESENCE_STATES = [
   "ACTING",
   "SPEAKING",
   "WAITING_FOR_APPROVAL",
+  "WAITING_FOR_USER",
   "ERROR",
   "OFFLINE",
 ] as const;
@@ -172,6 +173,7 @@ export function presenceMotionProfile(
     | "acting"
     | "responding"
     | "hold"
+    | "awaiting"
     | "success"
     | "error"
     | "offline"
@@ -183,6 +185,7 @@ export function presenceMotionProfile(
   acting: boolean;
   responding: boolean;
   hold: boolean;
+  awaiting: boolean;
   error: boolean;
   offline: boolean;
 } {
@@ -194,17 +197,21 @@ export function presenceMotionProfile(
       acting: false,
       responding: false,
       hold: state === "WAITING_FOR_APPROVAL",
+      awaiting: state === "WAITING_FOR_USER",
       error: state === "ERROR",
       offline: state === "OFFLINE",
     };
   }
   return {
-    rotate: state !== "OFFLINE" && state !== "WAITING_FOR_APPROVAL",
+    rotate:
+      state !== "OFFLINE" &&
+      state !== "WAITING_FOR_APPROVAL",
     thinking:
       !responding && (state === "THINKING" || state === "LISTENING"),
     acting: state === "ACTING" || state === "SPEAKING",
     responding,
     hold: state === "WAITING_FOR_APPROVAL",
+    awaiting: state === "WAITING_FOR_USER",
     error: state === "ERROR",
     offline: state === "OFFLINE",
   };

@@ -11,6 +11,7 @@ import {
   Tray,
 } from "electron";
 import path from "node:path";
+import fs from "node:fs";
 import { z } from "zod";
 import { DeviceBridge } from "./bridge";
 import { getAurumWebUrl, loadDesktopEnv } from "./config";
@@ -32,15 +33,33 @@ import type { UpdaterPublicState } from "./updater-state";
 import { buildTrayUpdateMenu } from "./updater-tray";
 
 /**
- * Aurum Desktop — Phase 4.3 companion (device bridge + auto-updater).
+ * Aurum Console — Windows companion (device bridge + auto-updater).
+ * Product/assistant name remains Aurum; this app's Windows identity is Aurum Console.
  * Manual launch → full main window; Ctrl+Space → overlay only.
  */
 
 loadDesktopEnv();
 
+/** Windows application identity (Start Menu, window title, tray tooltip). */
 const PRODUCT = {
-  name: "Aurum",
+  name: "Aurum Console",
 } as const;
+
+function brandAssetPath(...parts: string[]): string {
+  return path.join(__dirname, "..", "assets", ...parts);
+}
+
+function loadBrandNativeImage(
+  ...candidates: string[]
+): Electron.NativeImage {
+  for (const file of candidates) {
+    const full = brandAssetPath(file);
+    if (!fs.existsSync(full)) continue;
+    const img = nativeImage.createFromPath(full);
+    if (!img.isEmpty()) return img;
+  }
+  return nativeImage.createEmpty();
+}
 
 const DEFAULT_DESKTOP_HOTKEY = "CommandOrControl+Space";
 
@@ -109,6 +128,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     title: PRODUCT.name,
+    icon: brandAssetPath("icon.ico"),
     backgroundColor: "#0a0a0b",
     show: false,
     webPreferences: {
@@ -251,7 +271,7 @@ function broadcastUpdaterState(state: UpdaterPublicState): void {
 }
 
 function createTray(): void {
-  const icon = nativeImage.createEmpty();
+  const icon = loadBrandNativeImage("tray-32.png", "tray-16.png", "icon.ico");
   tray = new Tray(
     icon.isEmpty()
       ? nativeImage.createFromDataURL(
@@ -259,7 +279,7 @@ function createTray(): void {
         )
       : icon,
   );
-  tray.setToolTip("Aurum");
+  tray.setToolTip(PRODUCT.name);
   rebuildTrayMenu();
   tray.on("double-click", () => showMainWindow());
 }
@@ -551,6 +571,11 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return;
+
+  app.setName(PRODUCT.name);
+  if (process.platform === "win32") {
+    app.setAppUserModelId("com.aurum.assistant");
+  }
 
   desktopUpdater = new DesktopUpdater(app.getVersion(), {
     onStateChange: (state) => broadcastUpdaterState(state),

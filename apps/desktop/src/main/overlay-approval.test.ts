@@ -50,6 +50,9 @@ describe("overlay approval security contracts", () => {
     const src = fs.readFileSync(app, "utf8");
     assert.match(src, /approval_required/);
     assert.match(src, /WAITING_FOR_APPROVAL/);
+    assert.match(src, /WAITING_FOR_USER/);
+    assert.match(src, /clarification_needed/);
+    assert.match(src, /NEED YOUR INPUT/);
     assert.match(src, /decideOverlayApproval/);
     assert.match(src, /never approves/i);
     assert.match(src, /hideOverlay/);

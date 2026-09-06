@@ -18,6 +18,8 @@ export type {
   PresenceState,
   PresencePresentation,
 } from "./Presence";
+export { presenceSpinTargets, lerpSpin } from "./presence-spin";
+export type { PresenceSpinTargets } from "./presence-spin";
 export {
   PRESENCE_LAYER_IDS,
   PRESENCE_STATES,

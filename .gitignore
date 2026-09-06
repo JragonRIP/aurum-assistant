@@ -21,6 +21,10 @@ build/
 dist/
 release/
 
+# Keep Aurum Console Windows brand assets (electron-builder buildResources)
+!apps/desktop/build/
+!apps/desktop/build/**
+
 # electron
 apps/desktop/dist/
 apps/desktop/app-dist/

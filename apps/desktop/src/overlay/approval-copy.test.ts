@@ -35,20 +35,23 @@ describe("overlay approval copy", () => {
 
 describe("overlay approval presence mapping", () => {
   it("maps awaiting approval to WAITING_FOR_APPROVAL hold state", async () => {
-    // Inline the same logic OverlayApp uses — keep in sync if mapPresence moves
     function mapPresence(opts: {
       streaming: boolean;
       acting: boolean;
       awaitingApproval: boolean;
+      awaitingUser: boolean;
       error: string | null;
       offline: boolean;
     }) {
       if (opts.offline) return { state: "OFFLINE", presentation: "offline" };
-      if (opts.error && !opts.streaming && !opts.awaitingApproval) {
-        return { state: "ERROR", presentation: "error" };
-      }
       if (opts.awaitingApproval) {
         return { state: "WAITING_FOR_APPROVAL", presentation: "hold" };
+      }
+      if (opts.awaitingUser) {
+        return { state: "WAITING_FOR_USER", presentation: "awaiting" };
+      }
+      if (opts.error && !opts.streaming) {
+        return { state: "ERROR", presentation: "error" };
       }
       if (opts.acting) return { state: "ACTING", presentation: "acting" };
       if (opts.streaming) return { state: "THINKING", presentation: "thinking" };
@@ -59,6 +62,7 @@ describe("overlay approval presence mapping", () => {
       streaming: false,
       acting: false,
       awaitingApproval: true,
+      awaitingUser: false,
       error: null,
       offline: false,
     });
@@ -69,9 +73,21 @@ describe("overlay approval presence mapping", () => {
       streaming: false,
       acting: false,
       awaitingApproval: true,
+      awaitingUser: false,
       error: "stale warning",
       offline: false,
     });
     assert.equal(notErrorWhilePending.state, "WAITING_FOR_APPROVAL");
+
+    const clarify = mapPresence({
+      streaming: false,
+      acting: false,
+      awaitingApproval: false,
+      awaitingUser: true,
+      error: "Multiple plausible tracks — ask which artist.",
+      offline: false,
+    });
+    assert.equal(clarify.state, "WAITING_FOR_USER");
+    assert.equal(clarify.presentation, "awaiting");
   });
 });

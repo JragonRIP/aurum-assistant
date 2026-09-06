@@ -7,6 +7,7 @@ export type PresencePresentation =
   | "acting"
   | "responding"
   | "hold"
+  | "awaiting"
   | "success"
   | "error"
   | "offline"
@@ -41,6 +42,8 @@ export function derivePresencePresentation(opts: {
       return "offline";
     case "WAITING_FOR_APPROVAL":
       return "hold";
+    case "WAITING_FOR_USER":
+      return "awaiting";
     case "ACTING":
       return "acting";
     case "LISTENING":
@@ -61,6 +64,7 @@ export function derivePresencePresentation(opts: {
 export function presenceStatusLabel(opts: {
   presentation: PresencePresentation;
   toolLabel?: string | null;
+  state?: PresenceState;
 }): string {
   if (opts.presentation === "acting") {
     const trusted = trustedActivityCaption(opts.toolLabel);
@@ -74,6 +78,8 @@ export function presenceStatusLabel(opts: {
       return "RESPONDING";
     case "hold":
       return "WAITING FOR APPROVAL";
+    case "awaiting":
+      return "NEED YOUR INPUT";
     case "error":
       return "ERROR";
     case "offline":
@@ -130,8 +136,24 @@ export function isConnectivityActivityCaption(
 export function presenceShowsError(opts: {
   error: string | null | undefined;
   streaming?: boolean;
+  awaitingApproval?: boolean;
+  awaitingUser?: boolean;
 }): boolean {
+  if (opts.awaitingApproval || opts.awaitingUser) return false;
   return Boolean(opts.error) && !opts.streaming;
+}
+
+/** Soft clarification messages must never become ERROR copy. */
+export function isClarificationUserMessage(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    /multiple plausible/.test(m) ||
+    /ask which/.test(m) ||
+    /which (one|artist|playlist|track)/.test(m) ||
+    /needs? clarification/.test(m) ||
+    /did you mean/.test(m)
+  );
 }
 
 export const MINI_PRESENCE_ALLOWED = false;

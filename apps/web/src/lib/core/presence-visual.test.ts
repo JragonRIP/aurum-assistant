@@ -57,6 +57,7 @@ describe("Aurum Core visual", () => {
       "ACTING",
       "SPEAKING",
       "WAITING_FOR_APPROVAL",
+      "WAITING_FOR_USER",
       "ERROR",
       "OFFLINE",
     ]);

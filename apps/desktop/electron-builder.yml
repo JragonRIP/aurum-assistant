@@ -1,6 +1,7 @@
 appId: com.aurum.assistant
-productName: Aurum
-copyright: Copyright © Aurum
+productName: Aurum Console
+copyright: Copyright (c) Aurum
+# Keep stable EXE basename so upgrades from Aurum 0.2.x stay on the same binary identity.
 executableName: Aurum
 
 # Staged by scripts/stage-pack.mjs (avoids .gitignore excluding dist/)
@@ -35,11 +36,11 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: Aurum-Setup-${version}.exe
-  # Private unsigned build: skip winCodeSign rcedit (avoids Windows symlink privilege errors).
+  artifactName: Aurum-Console-Setup-${version}.exe
+  icon: build/icon.ico
+  # Private unsigned build: skip winCodeSign (avoids Windows symlink privilege errors).
+  # EXE icon + version strings are applied in afterPack via the rcedit package.
   signAndEditExecutable: false
-  # No Aurum .ico in the repo yet — Electron default icon until brand assets land.
-  # Place build/icon.ico when available (installer, exe, Start Menu, uninstall).
 
 nsis:
   oneClick: false
@@ -48,9 +49,16 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: Aurum
-  uninstallDisplayName: Aurum
+  shortcutName: Aurum Console
+  uninstallDisplayName: Aurum Console
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
   runAfterFinish: true
   deleteAppDataOnUninstall: false
+  # Remove pre-Console shortcuts named "Aurum" (same install identity).
+  include: build/installer.nsh
 
 forceCodeSigning: false
+
+afterPack: scripts/after-pack.cjs

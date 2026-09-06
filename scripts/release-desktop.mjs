@@ -271,7 +271,7 @@ function release(kind) {
   console.log(`Release triggered: ${tag}`);
   console.log("Check: GitHub → Actions → Desktop Release");
   console.log(
-    "After the workflow finishes, installed Aurum can auto-update from the new GitHub Release.",
+    "After the workflow finishes, installed Aurum Console can auto-update from the new GitHub Release.",
   );
 }
 

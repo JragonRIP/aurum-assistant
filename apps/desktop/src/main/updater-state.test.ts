@@ -108,7 +108,7 @@ describe("tray update menu", () => {
       enabled: true,
     });
     assert.equal(m.primaryAction, "install");
-    assert.equal(m.primaryLabel, "Restart to Update Aurum");
+    assert.equal(m.primaryLabel, "Restart to Update Aurum Console");
     assert.match(m.statusLabel, /Update ready/);
   });
 });

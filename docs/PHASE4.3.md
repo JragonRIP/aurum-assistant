@@ -33,7 +33,7 @@ Pushing a version tag triggers `.github/workflows/desktop-release.yml` on `windo
 2. Assert `vX.Y.Z` matches `apps/desktop/package.json`
 3. Desktop typecheck + tests + build
 4. Stage + electron-builder `--publish always` (uses Actions `GITHUB_TOKEN`)
-5. Verify `Aurum-Setup-X.Y.Z.exe`, `.blockmap`, and `latest.yml`
+5. Verify `Aurum-Console-Setup-X.Y.Z.exe`, `.blockmap`, and `latest.yml`
 
 Normal branch pushes do **not** publish a desktop installer (Vercel still deploys web independently).
 
@@ -56,9 +56,9 @@ Local package without publish: `npm run pack:desktop`.
 
 Artifacts (in `apps/desktop/release/`):
 
-- `Aurum-Setup-x.y.z.exe`
+- `Aurum-Console-Setup-x.y.z.exe`
 - `latest.yml`
-- `Aurum-Setup-x.y.z.exe.blockmap`
+- `Aurum-Console-Setup-x.y.z.exe.blockmap`
 
 ## Unsigned builds
 

@@ -64,10 +64,10 @@ export function updaterStatusLabel(state: UpdaterPublicState): string {
       return "Checking for updates…";
     case "update_available":
       return state.latestVersion
-        ? `Aurum update available · ${state.latestVersion}`
-        : "Aurum update available";
+        ? `Aurum Console update available · ${state.latestVersion}`
+        : "Aurum Console update available";
     case "up_to_date":
-      return "Aurum is up to date";
+      return "Aurum Console is up to date";
     case "downloading":
       return state.progressPercent != null
         ? `Downloading update · ${Math.round(state.progressPercent)}%`

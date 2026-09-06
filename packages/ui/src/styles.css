@@ -196,20 +196,13 @@
   transition: opacity 0.75s var(--aurum-ease);
 }
 
-.acv-ticks {
-  animation: acv-spin 120s linear infinite;
-}
-
-.acv-micro {
-  animation: acv-spin-reverse 84s linear infinite;
-}
-
-.acv-primary {
-  animation: acv-spin 240s linear infinite;
-}
-
+.acv-ticks,
+.acv-micro,
+.acv-primary,
 .acv-secondary {
-  animation: acv-spin-reverse 96s linear infinite;
+  /* Continuous spin driven by Presence.tsx rAF — avoid CSS restarts on state change */
+  animation: none;
+  will-change: transform;
 }
 
 .acv-inner {
@@ -218,6 +211,7 @@
 
 .acv-core-wrap {
   animation: acv-breathe 4.2s var(--aurum-ease) infinite;
+  transition: filter 280ms var(--aurum-ease);
 }
 
 .acv-glow {
@@ -261,52 +255,21 @@
   opacity: 0.9;
 }
 
-.aurum-presence[data-state="THINKING"] .acv-ticks {
-  animation-duration: 36s;
-}
-
-.aurum-presence[data-state="THINKING"] .acv-micro {
-  animation-duration: 14s;
-}
-
-.aurum-presence[data-state="THINKING"] .acv-primary {
-  animation-duration: 22s;
-}
-
 .aurum-presence[data-state="THINKING"] .acv-core-wrap {
   animation-duration: 2.6s;
 }
 
 .aurum-presence[data-presentation="thinking"] .acv-stroke-gold {
   stroke: #d4b888;
+  transition: stroke 280ms var(--aurum-ease);
 }
 
 .aurum-presence[data-presentation="responding"] .acv-thinking {
   opacity: 0.28;
 }
 
-.aurum-presence[data-presentation="responding"] .acv-ticks {
-  animation-duration: 96s;
-}
-
-.aurum-presence[data-presentation="responding"] .acv-micro {
-  animation-duration: 48s;
-}
-
-.aurum-presence[data-presentation="responding"] .acv-primary {
-  animation-duration: 72s;
-}
-
-.aurum-presence[data-presentation="responding"] .acv-secondary {
-  animation: acv-calibrate 5.5s ease-in-out infinite;
-}
-
 .aurum-presence[data-presentation="responding"] .acv-core-wrap {
   animation-duration: 3.6s;
-}
-
-.aurum-presence[data-state="LISTENING"] .acv-secondary {
-  animation: acv-listen 2.8s ease-in-out infinite;
 }
 
 .aurum-presence[data-state="LISTENING"] .acv-core-wrap {
@@ -316,12 +279,6 @@
 .aurum-presence[data-state="ACTING"] .acv-acting,
 .aurum-presence[data-state="SPEAKING"] .acv-acting {
   opacity: 1;
-}
-
-.aurum-presence[data-state="ACTING"] .acv-ticks,
-.aurum-presence[data-state="ACTING"] .acv-micro,
-.aurum-presence[data-state="ACTING"] .acv-primary {
-  animation-duration: 48s;
 }
 
 .aurum-presence[data-state="ACTING"] .acv-success-pulse {
@@ -344,26 +301,24 @@
   animation: acv-speak 1.15s var(--aurum-ease) infinite;
 }
 
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-hold {
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-hold,
+.aurum-presence[data-state="WAITING_FOR_USER"] .acv-hold {
   opacity: 1;
 }
 
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-ticks,
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-micro,
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-primary,
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-secondary,
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-inner {
-  animation-play-state: paused;
-  opacity: 0.72;
-}
-
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-core-wrap {
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-core-wrap,
+.aurum-presence[data-state="WAITING_FOR_USER"] .acv-core-wrap {
   animation-duration: 3.4s;
 }
 
-.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-indicator-0 {
+.aurum-presence[data-state="WAITING_FOR_APPROVAL"] .acv-indicator-0,
+.aurum-presence[data-state="WAITING_FOR_USER"] .acv-indicator-0 {
   animation: acv-lamp 2.8s ease-in-out infinite;
   opacity: 1;
+}
+
+.aurum-presence[data-presentation="awaiting"] .acv-hold {
+  opacity: 0.85;
 }
 
 .aurum-presence[data-state="ERROR"] .acv-error {

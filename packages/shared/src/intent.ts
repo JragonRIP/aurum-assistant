@@ -146,11 +146,15 @@ export function derivePresenceState(opts: {
   listening?: boolean;
   speaking?: boolean;
   awaitingApproval?: boolean;
+  /** Clarification / disambiguation — not a failure */
+  awaitingUser?: boolean;
   error?: boolean;
 }): PresenceState {
   if (!opts.aiConfigured) return "OFFLINE";
-  if (opts.error && !opts.streaming) return "ERROR";
+  // Waiting for the user outranks error — pending input is normal control flow
   if (opts.awaitingApproval) return "WAITING_FOR_APPROVAL";
+  if (opts.awaitingUser) return "WAITING_FOR_USER";
+  if (opts.error && !opts.streaming) return "ERROR";
   if (opts.acting) return "ACTING";
   if (opts.listening) return "LISTENING";
   if (opts.speaking) return "SPEAKING";
@@ -162,7 +166,7 @@ export function presenceFromAssistantState(
   state: AssistantState,
 ): PresenceState {
   if (state === "USING_TOOL") return "ACTING";
-  return state;
+  return state as PresenceState;
 }
 
 export function presenceShouldAnimate(prefersReducedMotion: boolean): boolean {

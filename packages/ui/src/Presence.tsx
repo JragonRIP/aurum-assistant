@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useId } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import {
   CARDINAL_PIP_ANGLES,
   DOUBLE_HOUSING,
@@ -17,6 +17,7 @@ import {
   radialHatch,
   tickPath,
 } from "./presence-geometry";
+import { lerpSpin, presenceSpinTargets } from "./presence-spin";
 
 export type PresenceState =
   | "IDLE"
@@ -25,6 +26,7 @@ export type PresenceState =
   | "ACTING"
   | "SPEAKING"
   | "WAITING_FOR_APPROVAL"
+  | "WAITING_FOR_USER"
   | "ERROR"
   | "OFFLINE";
 
@@ -34,6 +36,7 @@ export type PresencePresentation =
   | "acting"
   | "responding"
   | "hold"
+  | "awaiting"
   | "success"
   | "error"
   | "offline"
@@ -59,6 +62,8 @@ function presentationFromState(state: PresenceState): PresencePresentation {
       return "listening";
     case "WAITING_FOR_APPROVAL":
       return "hold";
+    case "WAITING_FOR_USER":
+      return "awaiting";
     case "ERROR":
       return "error";
     case "OFFLINE":
@@ -98,9 +103,22 @@ function structuralClass(tone: (typeof STRUCTURAL_ARCS)[number]["tone"]): string
   }
 }
 
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(mq.matches);
+    const onChange = () => setReduced(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
+}
+
 /**
  * Aurum Core visual — layered SVG instrument.
  * Same presence state API. No raster reference image.
+ * Spin layers keep continuous angles across state changes (no CSS restart jumps).
  */
 function AurumPresenceInner({
   state,
@@ -117,6 +135,70 @@ function AurumPresenceInner({
   const presentation = presentationProp ?? presentationFromState(state);
   const caption = label ?? state.replaceAll("_", " ");
   const error = state === "ERROR";
+  const reducedMotion = usePrefersReducedMotion();
+
+  const ticksRef = useRef<SVGGElement | null>(null);
+  const microRef = useRef<SVGGElement | null>(null);
+  const primaryRef = useRef<SVGGElement | null>(null);
+  const secondaryRef = useRef<SVGGElement | null>(null);
+  const stateRef = useRef(state);
+  const presentationRef = useRef(presentation);
+  stateRef.current = state;
+  presentationRef.current = presentation;
+
+  useEffect(() => {
+    const angles = { ticks: 0, micro: 0, primary: 0, secondary: 0 };
+    const velocity = { ...presenceSpinTargets(state, presentation, reducedMotion) };
+    let last = performance.now();
+    let raf = 0;
+
+    const origin = "200px 200px";
+    const apply = () => {
+      if (ticksRef.current) {
+        ticksRef.current.style.transformOrigin = origin;
+        ticksRef.current.style.transform = `rotate(${angles.ticks}deg)`;
+      }
+      if (microRef.current) {
+        microRef.current.style.transformOrigin = origin;
+        microRef.current.style.transform = `rotate(${angles.micro}deg)`;
+      }
+      if (primaryRef.current) {
+        primaryRef.current.style.transformOrigin = origin;
+        primaryRef.current.style.transform = `rotate(${angles.primary}deg)`;
+      }
+      if (secondaryRef.current) {
+        secondaryRef.current.style.transformOrigin = origin;
+        secondaryRef.current.style.transform = `rotate(${angles.secondary}deg)`;
+      }
+    };
+
+    const tick = (now: number) => {
+      const dt = Math.min(48, now - last);
+      last = now;
+      const target = presenceSpinTargets(
+        stateRef.current,
+        presentationRef.current,
+        reducedMotion,
+      );
+      velocity.ticks = lerpSpin(velocity.ticks, target.ticks, dt);
+      velocity.micro = lerpSpin(velocity.micro, target.micro, dt);
+      velocity.primary = lerpSpin(velocity.primary, target.primary, dt);
+      velocity.secondary = lerpSpin(velocity.secondary, target.secondary, dt);
+      const step = dt / 1000;
+      angles.ticks += velocity.ticks * step;
+      angles.micro += velocity.micro * step;
+      angles.primary += velocity.primary * step;
+      angles.secondary += velocity.secondary * step;
+      apply();
+      raf = requestAnimationFrame(tick);
+    };
+
+    apply();
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // Mount once — state/presentation read from refs so angles never reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reducedMotion]);
 
   return (
     <span
@@ -241,7 +323,7 @@ function AurumPresenceInner({
           />
         </g>
 
-        <g data-layer="ticks" className="acv-layer acv-ticks">
+        <g data-layer="ticks" className="acv-layer acv-ticks" ref={ticksRef}>
           <path
             d={TICKS}
             className="acv-stroke-tick"
@@ -317,7 +399,7 @@ function AurumPresenceInner({
           })}
         </g>
 
-        <g data-layer="primary-arc" className="acv-layer acv-primary">
+        <g data-layer="primary-arc" className="acv-layer acv-primary" ref={primaryRef}>
           <circle
             cx={CX}
             cy={CY}
@@ -346,7 +428,7 @@ function AurumPresenceInner({
           />
         </g>
 
-        <g data-layer="secondary-arc" className="acv-layer acv-secondary">
+        <g data-layer="secondary-arc" className="acv-layer acv-secondary" ref={secondaryRef}>
           <circle
             cx={CX}
             cy={CY}
@@ -365,7 +447,7 @@ function AurumPresenceInner({
           />
         </g>
 
-        <g data-layer="micro" className="acv-layer acv-micro">
+        <g data-layer="micro" className="acv-layer acv-micro" ref={microRef}>
           <path
             d={MICRO}
             className="acv-stroke-micro"

@@ -18,6 +18,7 @@ export const AssistantStateSchema = z.enum([
   "ACTING",
   "USING_TOOL",
   "WAITING_FOR_APPROVAL",
+  "WAITING_FOR_USER",
   "SPEAKING",
   "ERROR",
   "OFFLINE",
@@ -32,6 +33,7 @@ export const PresenceStateSchema = z.enum([
   "ACTING",
   "SPEAKING",
   "WAITING_FOR_APPROVAL",
+  "WAITING_FOR_USER",
   "ERROR",
   "OFFLINE",
 ]);

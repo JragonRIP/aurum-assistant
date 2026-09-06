@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bumpSemver } from "./lib/desktop-release.mjs";
+import { bumpSemver, releaseTagMessage } from "./lib/desktop-release.mjs";
 
 const kind = process.argv[2];
 const withGit = process.argv.includes("--git");
@@ -44,7 +44,7 @@ if (withGit) {
   );
   execFileSync(
     "git",
-    ["tag", "-a", `v${next}`, "-m", `Aurum desktop ${next}`],
+    ["tag", "-a", `v${next}`, "-m", releaseTagMessage(next)],
     { cwd: root, stdio: "inherit" },
   );
   console.log(`Created commit + tag v${next}`);
@@ -53,6 +53,6 @@ if (withGit) {
 } else {
   console.log("Next steps (no auto-push):");
   console.log(`  1. Commit apps/desktop/package.json`);
-  console.log(`  2. git tag -a v${next} -m "Aurum desktop ${next}"`);
+  console.log(`  2. git tag -a v${next} -m "${releaseTagMessage(next)}"`);
   console.log(`  3. git push origin HEAD && git push origin v${next}`);
 }

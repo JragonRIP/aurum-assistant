@@ -191,7 +191,7 @@ export class DesktopUpdater {
         // Manual check only — one dialog, never spam
         void dialog.showMessageBox({
           type: "warning",
-          title: "Aurum Update",
+          title: "Aurum Console Update",
           message: "Could not check for updates.",
           detail: message,
           buttons: ["OK"],
@@ -230,10 +230,10 @@ export class DesktopUpdater {
       const version = this.state.latestVersion ?? "a new version";
       const result = await dialog.showMessageBox({
         type: "info",
-        title: "Aurum Update",
-        message: `Aurum ${version} is ready to install.`,
+        title: "Aurum Console Update",
+        message: `Aurum Console ${version} is ready to install.`,
         detail:
-          "Restart Aurum to apply the update. Your device pairing and settings are preserved.",
+          "Restart Aurum Console to apply the update. Your device pairing and settings are preserved.",
         buttons: ["Restart & Update", "Later"],
         defaultId: 0,
         cancelId: 1,
