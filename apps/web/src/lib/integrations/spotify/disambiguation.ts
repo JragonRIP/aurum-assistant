@@ -60,6 +60,7 @@ export async function getActiveDisambiguationSession(opts: {
   supabase: SupabaseClient;
   userId: string;
   conversationId?: string | null;
+  intentType?: MusicIntentType;
 }): Promise<DisambiguationSession | null> {
   let q = opts.supabase
     .from("music_disambiguation_sessions")
@@ -71,6 +72,9 @@ export async function getActiveDisambiguationSession(opts: {
     .limit(1);
   if (opts.conversationId) {
     q = q.eq("conversation_id", opts.conversationId);
+  }
+  if (opts.intentType) {
+    q = q.eq("intent_type", opts.intentType);
   }
   const { data, error } = await q.maybeSingle();
   if (error || !data) return null;
@@ -124,6 +128,30 @@ export async function markDisambiguationResolved(opts: {
     })
     .eq("id", opts.sessionId)
     .eq("user_id", opts.userId);
+}
+
+export async function expireActiveDisambiguationSessions(opts: {
+  supabase: SupabaseClient;
+  userId: string;
+  conversationId?: string | null;
+  /** When set, only expire this intent type (e.g. ignore stale track after playlist play). */
+  intentType?: MusicIntentType;
+}): Promise<void> {
+  let q = opts.supabase
+    .from("music_disambiguation_sessions")
+    .update({
+      resolved_at: new Date().toISOString(),
+      selected_provider_id: null,
+    })
+    .eq("user_id", opts.userId)
+    .is("resolved_at", null);
+  if (opts.conversationId) {
+    q = q.eq("conversation_id", opts.conversationId);
+  }
+  if (opts.intentType) {
+    q = q.eq("intent_type", opts.intentType);
+  }
+  await q;
 }
 
 function mapSession(data: Record<string, unknown>): DisambiguationSession {

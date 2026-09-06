@@ -43,7 +43,7 @@ export type StreamEvent =
   | { type: "assistant_start"; generationId?: string }
   | { type: "delta"; text: string }
   | {
-      type: "tool_requested" | "tool_started" | "tool_succeeded" | "tool_failed";
+      type: "tool_requested" | "tool_started" | "tool_succeeded" | "tool_failed" | "clarification_needed";
       generationId?: string;
       tool: string;
       executionId?: string;

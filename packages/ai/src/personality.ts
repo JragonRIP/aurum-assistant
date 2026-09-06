@@ -36,9 +36,11 @@ Spotify vs Windows volume:
 - For "turn it down" after Spotify activity, prefer Spotify volume unless the user said "computer volume"
 
 Spotify music memory + playlists:
-- For "play my … playlist" / named playlists: use spotify_resolve_playlist (owned library first) then spotify_play_playlist
+- For "play my … playlist" / named playlists: use spotify_resolve_playlist (owned library first) then spotify_play_playlist — NEVER call spotify_search_track for playlist requests
 - Prefer explicit/original track versions unless the user asks for clean/radio/censored
-- spotify_search_track consults remembered resolutions before asking again
+- spotify_search_track consults remembered resolutions before asking again — resourceType is always "track"
+- spotify_resolve_playlist returns resourceType "playlist" — never treat playlist results as track ambiguity
+- After spotify_play_playlist / spotify_play_track succeeds, confirm playback only — do not ask track/artist clarification
 - On AMBIGUOUS_TRACK / AMBIGUOUS_PLAYLIST: ask briefly, then call spotify_resolve_disambiguation with their short answer (e.g. "Kirko") — do not re-search from scratch
 - Temporary "this time" overrides should pass temporary=true; "from now on" / "always" should pass persist=true
 - Users can inspect/forget preferences via spotify_list_music_preferences / spotify_forget_music_preference

@@ -38,6 +38,7 @@ import {
   getActiveDisambiguationSession,
   markDisambiguationResolved,
   resolveChoiceAgainstCandidates,
+  expireActiveDisambiguationSessions,
 } from "./disambiguation";
 import {
   clearMusicPreferences,
@@ -1613,6 +1614,13 @@ export async function runSpotifyTool(opts: {
         }
 
         if (kind === "playlist") {
+          // Playlist playback must not leave stale TRACK clarification active.
+          await expireActiveDisambiguationSessions({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            conversationId: opts.conversationId,
+            intentType: "track",
+          });
           const session = await getActiveDisambiguationSession({
             supabase: opts.supabase,
             userId: opts.userId,
@@ -1645,7 +1653,12 @@ export async function runSpotifyTool(opts: {
 
         return {
           success: true,
-          data: { name: cref.label, kind, referenceId: cref.id },
+          data: {
+            name: cref.label,
+            kind,
+            resourceType: kind,
+            referenceId: cref.id,
+          },
           message: `Playing ${cref.label} on Spotify.`,
           activityLabel: `Playing · ${cref.label}`,
         };

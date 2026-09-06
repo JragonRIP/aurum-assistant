@@ -77,7 +77,7 @@ type StreamEvent =
   | { type: "assistant_start"; generationId?: string }
   | { type: "delta"; text: string }
   | {
-      type: "tool_requested" | "tool_started" | "tool_succeeded" | "tool_failed";
+      type: "tool_requested" | "tool_started" | "tool_succeeded" | "tool_failed" | "clarification_needed";
       tool: string;
       executionId?: string;
       data?: unknown;
@@ -494,6 +494,31 @@ export function useAurumSession() {
                 label: "FAILED",
                 detail,
                 state: "error",
+              });
+            }
+            continue;
+          }
+
+          if (event.type === "clarification_needed") {
+            const key = event.executionId ?? event.tool;
+            const id = toolActivityIds.get(key);
+            toolActivityIds.delete(key);
+            setActing(toolActivityIds.size > 0);
+            const detail =
+              event.display?.detail ??
+              event.error?.message ??
+              "Needs clarification";
+            if (id) {
+              patchActivity(id, {
+                state: "success",
+                label: "CLARIFY",
+                detail,
+              });
+            } else {
+              pushActivity({
+                label: "CLARIFY",
+                detail,
+                state: "success",
               });
             }
             continue;

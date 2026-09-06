@@ -7,6 +7,14 @@ import type {
   ToolRunStatus,
 } from "./types";
 
+export function isClarificationErrorCode(code: string | undefined): boolean {
+  return (
+    code === "AMBIGUOUS_TRACK" ||
+    code === "AMBIGUOUS_PLAYLIST" ||
+    code === "AMBIGUOUS_MATCH"
+  );
+}
+
 export type ToolExecutorEvent =
   | {
       type: "tool_requested";
@@ -33,6 +41,15 @@ export type ToolExecutorEvent =
       tool: string;
       executionId: string;
       error: { code: string; message: string };
+      display?: { label: string; detail?: string };
+    }
+  | {
+      /** Soft clarification — not a hard failure for UI (AMBIGUOUS_*). */
+      type: "clarification_needed";
+      tool: string;
+      executionId: string;
+      error: { code: string; message: string };
+      data?: unknown;
       display?: { label: string; detail?: string };
     }
   | {
@@ -365,6 +382,29 @@ export async function executeToolCall(options: {
         tool: toolName,
         executionMs: durationMs,
         generation: ctx.generationId,
+      });
+    } else if (isClarificationErrorCode(result.error?.code)) {
+      await ctx.data.toolRuns.complete(executionId, {
+        status: "failed",
+        errorCode: result.error?.code ?? "AMBIGUOUS_MATCH",
+        errorMessage: result.error?.message ?? "Clarification needed",
+        durationMs,
+      });
+      // Clarification is not a hard UI failure — clients must not flip to ERROR
+      // after a successful mutation earlier in the same generation.
+      emit({
+        type: "clarification_needed",
+        tool: toolName,
+        executionId,
+        error: result.error ?? {
+          code: "AMBIGUOUS_MATCH",
+          message: "Clarification needed",
+        },
+        data: result.data,
+        display: {
+          label: result.activityLabel ?? tool.activityLabel,
+          detail: result.error?.message,
+        },
       });
     } else {
       await ctx.data.toolRuns.complete(executionId, {

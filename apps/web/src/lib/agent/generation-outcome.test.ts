@@ -242,6 +242,58 @@ describe("GenerationOutcome / client reconciliation", () => {
     assert.equal(outcome.warning, undefined);
   });
 
+  it("playlist play success wins over later AMBIGUOUS_TRACK", () => {
+    const text = buildFallbackFromToolResults([
+      {
+        success: true,
+        message: "Found playlist Peak Life.",
+        data: { resourceType: "playlist" },
+      },
+      {
+        success: true,
+        message: "Playing Peak Life on Spotify.",
+        data: { resourceType: "playlist", kind: "playlist" },
+      },
+      {
+        success: false,
+        error: {
+          code: "AMBIGUOUS_TRACK",
+          message: "Multiple plausible tracks — ask which artist.",
+        },
+        data: { resourceType: "track", ambiguous: true },
+      },
+    ] as unknown as ToolResult[]);
+    assert.equal(text, "Playing Peak Life on Spotify.");
+  });
+
+  it("stale AMBIGUOUS_TRACK before playlist play still yields play success", () => {
+    const text = buildFallbackFromToolResults([
+      {
+        success: false,
+        error: {
+          code: "AMBIGUOUS_TRACK",
+          message: "Multiple plausible tracks — ask which artist.",
+        },
+      },
+      {
+        success: true,
+        message: "Playing Peak Life on Spotify.",
+      },
+    ] as unknown as ToolResult[]);
+    assert.equal(text, "Playing Peak Life on Spotify.");
+  });
+
+  it("successful mutation + final-response failure uses soft warning not full error", () => {
+    const handling = resolveClientStreamError({
+      errorMessage: "Gemini continuation failed",
+      actionsCommitted: true,
+      sawToolSucceeded: true,
+    });
+    assert.equal(handling.showFullError, false);
+    assert.equal(handling.preserveCommittedActions, true);
+    assert.equal(handling.errorMessage, null);
+  });
+
   it("10. two tools succeed + final AI continuation fails with fallback → no warning", () => {
     const outcome = buildStreamOutcome({
       actionsCommitted: true,

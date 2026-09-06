@@ -5,6 +5,7 @@ import {
   MAX_TOOL_ROUNDS,
   createDefaultRegistry,
   executeToolCall,
+  isClarificationErrorCode,
   toModelToolResult,
   type ToolExecutionContext,
   type ToolExecutorEvent,
@@ -448,6 +449,19 @@ export async function runAgentWithTools(options: {
 export function buildFallbackFromToolResults(results: ToolResult[]): string {
   if (results.length === 0) return "";
 
+  const successes = results.filter((r) => r.success);
+  const failures = results.filter((r) => !r.success);
+  const onlyClarificationFailures =
+    failures.length > 0 &&
+    failures.every((r) => isClarificationErrorCode(r.error?.code));
+
+  // Committed success wins over later/earlier AMBIGUOUS_* clarifications.
+  if (successes.length > 0 && (failures.length === 0 || onlyClarificationFailures)) {
+    const lastSuccess = successes[successes.length - 1]!;
+    const msg = (lastSuccess.message ?? lastSuccess.activityLabel ?? "Done.").trim();
+    if (msg) return msg;
+  }
+
   // Prefer the last successful tool message — preserves primary intent
   // (e.g. play after open) without concatenating intermediate noise.
   const last = results[results.length - 1]!;
@@ -456,14 +470,19 @@ export function buildFallbackFromToolResults(results: ToolResult[]): string {
     if (msg) return msg;
   }
 
+  // Clarification-only failures: surface the clarification message (no mutation yet).
+  if (onlyClarificationFailures && last.error?.message) {
+    return last.error.message.trim();
+  }
+
   const lines: string[] = [];
   const seen = new Set<string>();
   for (const r of results) {
     let msg: string | undefined;
     if (r.success) {
       msg = r.message ?? r.activityLabel ?? "Done.";
-    } else if (r.error?.code === "AMBIGUOUS_MATCH") {
-      msg = r.error.message;
+    } else if (isClarificationErrorCode(r.error?.code)) {
+      msg = r.error?.message;
     } else if (r.error) {
       msg = r.error.message;
     }

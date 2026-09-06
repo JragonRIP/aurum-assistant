@@ -267,6 +267,20 @@ describe("spotify music tools registered", () => {
   });
 });
 
+describe("resource type isolation", () => {
+  it("playlist and track ambiguity codes are distinct", () => {
+    assert.notEqual("AMBIGUOUS_PLAYLIST", "AMBIGUOUS_TRACK");
+  });
+
+  it("clarification codes are classified separately from hard failures", async () => {
+    const { isClarificationErrorCode } = await import("@aurum/tools");
+    assert.equal(isClarificationErrorCode("AMBIGUOUS_TRACK"), true);
+    assert.equal(isClarificationErrorCode("AMBIGUOUS_PLAYLIST"), true);
+    assert.equal(isClarificationErrorCode("EXECUTION_FAILED"), false);
+    assert.equal(isClarificationErrorCode("NO_ACTIVE_DEVICE"), false);
+  });
+});
+
 describe("override rules (conceptual)", () => {
   it("temporary override does not share key with persist phrase alone", () => {
     const base = normalizeMusicQuery("Play Drank in My Cup");
