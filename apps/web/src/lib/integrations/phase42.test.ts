@@ -71,7 +71,9 @@ describe("Phase 4.2 registry + permissions", () => {
     const registry = createDefaultRegistry();
     assert.equal(registry.get("shutdown_pc")?.permission, "CONFIRM");
     assert.equal(registry.get("delete_file")?.permission, "CONFIRM");
-    assert.equal(registry.get("close_window")?.permission, "CONFIRM");
+    assert.equal(registry.get("close_window")?.permission, "SAFE_WRITE");
+    assert.equal(registry.get("close_application")?.permission, "SAFE_WRITE");
+    assert.equal(registry.get("terminate_process")?.permission, "CONFIRM");
     assert.equal(registry.get("lock_pc")?.permission, "SAFE_WRITE");
     const confirm = evaluatePermission("CONFIRM");
     assert.equal(confirm.allowed, true);

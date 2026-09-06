@@ -80,7 +80,7 @@ const MUTATING_PERMISSION: Record<string, string> = {
   bring_window_to_front: "SAFE_WRITE",
   move_window_to_monitor: "SAFE_WRITE",
   focus_application: "SAFE_WRITE",
-  close_application: "CONFIRM",
+  close_application: "SAFE_WRITE",
   open_known_application: "SAFE_WRITE",
   terminate_process: "CONFIRM",
   press_shortcut: "SAFE_WRITE",

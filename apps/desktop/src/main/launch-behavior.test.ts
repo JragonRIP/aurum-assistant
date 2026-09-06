@@ -5,6 +5,7 @@ import {
   AURUM_AUTOSTART_FLAG,
   UPDATER_IPC_CHANNELS,
   isAutostartLaunch,
+  mainWindowConversationUrl,
   mainWindowEntryUrl,
   resolveHotkeyAction,
   resolveSecondInstanceAction,
@@ -78,6 +79,18 @@ describe("production URL used in packaged build", () => {
   it("main window entry uses production origin by default", () => {
     assert.equal(
       mainWindowEntryUrl(DEFAULT_AURUM_WEB_URL),
+      `${DEFAULT_AURUM_WEB_URL}/core`,
+    );
+  });
+
+  it("Open in Aurum preserves conversation via deep link", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    assert.equal(
+      mainWindowConversationUrl(DEFAULT_AURUM_WEB_URL, id),
+      `${DEFAULT_AURUM_WEB_URL}/core?c=${id}`,
+    );
+    assert.equal(
+      mainWindowConversationUrl(DEFAULT_AURUM_WEB_URL, null),
       `${DEFAULT_AURUM_WEB_URL}/core`,
     );
   });

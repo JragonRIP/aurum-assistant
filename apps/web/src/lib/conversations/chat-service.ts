@@ -21,6 +21,7 @@ import {
   listUserDevices,
 } from "@/lib/devices/queries";
 import { runSpotifyTool } from "@/lib/integrations/spotify/service";
+import { runWebAction } from "@/lib/integrations/web/research";
 import {
   getConversationForUser,
   getMessageForUser,
@@ -447,6 +448,13 @@ export function createChatStream(options: {
                     message: result.message ?? result.error?.message,
                   };
                 },
+              });
+            },
+            runWebAction: async (action, input, toolCtx) => {
+              return runWebAction({
+                action,
+                input,
+                signal: toolCtx?.signal ?? options.signal,
               });
             },
           },

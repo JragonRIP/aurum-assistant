@@ -77,6 +77,12 @@ export interface ToolExecutionContext {
     input: Record<string, unknown>,
     toolCtx?: ToolExecutionContext,
   ) => Promise<ToolResult>;
+  /** Host injects background web research (never opens the user browser). */
+  runWebAction?: (
+    action: string,
+    input: Record<string, unknown>,
+    toolCtx?: ToolExecutionContext,
+  ) => Promise<ToolResult>;
   /** Set by executor for the active tool call */
   currentExecutionId?: string;
   /**

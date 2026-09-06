@@ -88,8 +88,20 @@ const aurumDesktop = {
   setOverlayExpanded: (expanded: boolean): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:overlay-set-expanded", { expanded }),
 
-  openInAurum: (): Promise<{ ok: boolean }> =>
-    ipcRenderer.invoke("aurum:open-in-aurum"),
+  setOverlayLayout: (opts: {
+    mode?: "idle" | "compact" | "full";
+    contentHeightPx?: number;
+    expanded?: boolean;
+  }): Promise<{ ok: boolean; size?: { width: number; height: number } }> =>
+    ipcRenderer.invoke("aurum:overlay-set-expanded", opts),
+
+  notifyOverlayHideComplete: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("aurum:overlay-hide-complete"),
+
+  openInAurum: (opts?: {
+    conversationId?: string | null;
+  }): Promise<{ ok: boolean; conversationId?: string | null }> =>
+    ipcRenderer.invoke("aurum:open-in-aurum", opts ?? {}),
 
   getUpdaterState: (): Promise<UpdaterState> =>
     ipcRenderer.invoke("aurum:updater-get-state"),
@@ -114,17 +126,31 @@ const aurumDesktop = {
   },
 
   onOverlayShown: (
-    callback: (state: { paired: boolean; online: boolean }) => void,
+    callback: (state: {
+      paired: boolean;
+      online: boolean;
+      animate?: boolean;
+    }) => void,
   ): (() => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      state: { paired: boolean; online: boolean },
+      state: { paired: boolean; online: boolean; animate?: boolean },
     ): void => {
       callback(state);
     };
     ipcRenderer.on("aurum:overlay-shown", listener);
     return () => {
       ipcRenderer.removeListener("aurum:overlay-shown", listener);
+    };
+  },
+
+  onOverlayWillHide: (callback: () => void): (() => void) => {
+    const listener = (): void => {
+      callback();
+    };
+    ipcRenderer.on("aurum:overlay-will-hide", listener);
+    return () => {
+      ipcRenderer.removeListener("aurum:overlay-will-hide", listener);
     };
   },
 

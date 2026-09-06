@@ -45,6 +45,10 @@ export class OverlayChatBridge {
     ) => void,
   ) {}
 
+  getActiveConversationId(): string | null {
+    return this.conversationId;
+  }
+
   async start(text: string): Promise<OverlayChatHandle> {
     const cred = this.getCred();
     if (!cred) throw new Error("Device not paired");

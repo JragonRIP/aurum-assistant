@@ -64,6 +64,11 @@ export { registerWindowsSystemTools } from "./windows-system-tools";
 export { registerWindowsCapabilityTools } from "./windows-capability-tools";
 export { clampVolumePercent, applyRelativeVolume } from "./volume";
 export {
+  registerWebTools,
+  createWebSearchTool,
+  createWebReadPageTool,
+} from "./web-tools";
+export {
   registerSpotifyTools,
   createSpotifyGetPlaybackStateTool,
   createSpotifyGetDevicesTool,

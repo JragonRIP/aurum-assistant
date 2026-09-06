@@ -349,9 +349,9 @@ export function createCloseWindowTool() {
     id: "close_window",
     name: "Close window",
     description:
-      "Close a window by trusted windowReference. May discard unsaved work — requires confirmation.",
+      "Gracefully close a window by trusted windowReference (normal close request). Prefer this over terminate_process.",
     inputSchema: windowRefSchema,
-    permission: "CONFIRM",
+    permission: "SAFE_WRITE",
     activityLabel: "Closing window",
   });
 }

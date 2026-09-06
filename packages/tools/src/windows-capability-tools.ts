@@ -376,9 +376,9 @@ export function registerWindowsCapabilityTools(registry: ToolRegistry): void {
       id: "close_application",
       name: "Close application",
       description:
-        "Close an application by friendly name. May discard unsaved work — requires confirmation.",
+        "Gracefully close an application by friendly name (sends normal window close). The app may still show its own unsaved-work prompt. Prefer this over terminate_process.",
       inputSchema: appNameSchema,
-      permission: "CONFIRM",
+      permission: "SAFE_WRITE",
       activityLabel: "Closing application",
     }),
   );

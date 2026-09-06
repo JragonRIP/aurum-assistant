@@ -58,6 +58,16 @@ export function mainWindowEntryUrl(webOrigin: string): string {
   return `${base}/core`;
 }
 
+/** Deep-link into a conversation in the full Console UI. */
+export function mainWindowConversationUrl(
+  webOrigin: string,
+  conversationId: string | null | undefined,
+): string {
+  const base = webOrigin.replace(/\/$/, "");
+  if (!conversationId) return `${base}/core`;
+  return `${base}/core?c=${encodeURIComponent(conversationId)}`;
+}
+
 /** Narrow updater IPC channel names — must stay closed to arbitrary URLs. */
 export const UPDATER_IPC_CHANNELS = [
   "aurum:updater-get-state",

@@ -10,6 +10,14 @@ import {
   approvalPrimaryLabel,
 } from "./approval-copy";
 
+/** Compact reply threshold — keep in sync with main/overlay-layout.ts */
+function shouldOfferShowFull(reply: string): boolean {
+  const text = reply.trim();
+  if (!text) return false;
+  const lines = text.split(/\r?\n/).length;
+  return text.length >= 420 || lines >= 10;
+}
+
 type OverlayInfo = {
   paired: boolean;
   online: boolean;
@@ -20,6 +28,12 @@ type NowPlaying = {
   title: string;
   artist?: string;
   playing?: boolean;
+};
+
+type ResearchSource = {
+  title: string;
+  url: string;
+  domain: string;
 };
 
 type StreamEvent = {
@@ -43,6 +57,8 @@ type PendingApproval = {
   detail: string;
   confirmVerb: string;
 };
+
+type LayoutMode = "idle" | "compact" | "full";
 
 function mapPresence(opts: {
   streaming: boolean;
@@ -82,6 +98,11 @@ export function OverlayApp() {
   const [successFlash, setSuccessFlash] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [layoutFull, setLayoutFull] = useState(false);
+  const [sources, setSources] = useState<ResearchSource[]>([]);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [shellVisible, setShellVisible] = useState(false);
+  const [shellHiding, setShellHiding] = useState(false);
   const [approvalQueue, setApprovalQueue] = useState<PendingApproval[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [awaitingUser, setAwaitingUser] = useState(false);
@@ -90,6 +111,9 @@ export function OverlayApp() {
   const awaitingApprovalRef = useRef(false);
   const awaitingUserRef = useRef(false);
   const replyRef = useRef("");
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const layoutTimer = useRef<number | null>(null);
+  const hideAcked = useRef(false);
 
   const pendingApproval = approvalQueue[0] ?? null;
   const awaitingApproval = Boolean(pendingApproval);
@@ -121,17 +145,41 @@ export function OverlayApp() {
 
   useEffect(() => {
     void refresh();
-    const unsub = window.aurumDesktop.onOverlayShown?.((state) => {
+    const unsubShown = window.aurumDesktop.onOverlayShown?.((state) => {
       setPaired(state.paired);
       setOnline(state.online);
+      hideAcked.current = false;
+      setShellHiding(false);
+      if (state.animate === false) {
+        setShellVisible(true);
+      } else {
+        setShellVisible(false);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setShellVisible(true));
+        });
+      }
       if (!awaitingApprovalRef.current) {
         setError(null);
         if (!state.paired) setStatus("CONNECT");
         else setStatus(state.online ? "READY" : "OFFLINE");
       }
-      window.setTimeout(() => inputRef.current?.focus(), 30);
+      window.setTimeout(() => inputRef.current?.focus(), 40);
     });
-    return () => unsub?.();
+    const unsubHide = window.aurumDesktop.onOverlayWillHide?.(() => {
+      hideAcked.current = false;
+      setShellHiding(true);
+      setShellVisible(false);
+      const finish = () => {
+        if (hideAcked.current) return;
+        hideAcked.current = true;
+        void window.aurumDesktop.notifyOverlayHideComplete?.();
+      };
+      window.setTimeout(finish, 240);
+    });
+    return () => {
+      unsubShown?.();
+      unsubHide?.();
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -158,9 +206,29 @@ export function OverlayApp() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [streaming]);
 
+  const pushLayout = useCallback((mode: LayoutMode, contentHeightPx?: number) => {
+    void window.aurumDesktop.setOverlayLayout?.({
+      mode,
+      contentHeightPx,
+      expanded: mode !== "idle",
+    });
+  }, []);
+
   useEffect(() => {
-    void window.aurumDesktop.setOverlayExpanded?.(expanded);
-  }, [expanded]);
+    const mode: LayoutMode = !expanded
+      ? "idle"
+      : layoutFull
+        ? "full"
+        : "compact";
+    if (layoutTimer.current) window.clearTimeout(layoutTimer.current);
+    layoutTimer.current = window.setTimeout(() => {
+      const h = bodyRef.current?.scrollHeight;
+      pushLayout(mode, typeof h === "number" ? h : undefined);
+    }, streaming ? 180 : 40);
+    return () => {
+      if (layoutTimer.current) window.clearTimeout(layoutTimer.current);
+    };
+  }, [expanded, layoutFull, reply, pendingApproval, sourcesOpen, streaming, pushLayout]);
 
   const presence = mapPresence({
     streaming,
@@ -268,6 +336,33 @@ export function OverlayApp() {
           setNowPlaying((prev) =>
             prev ? { ...prev, playing: false } : prev,
           );
+        }
+        if (event.tool === "web_search" && Array.isArray(data.results)) {
+          const nextSources: ResearchSource[] = [];
+          for (const row of data.results) {
+            if (!row || typeof row !== "object") continue;
+            const item = row as Record<string, unknown>;
+            const url = typeof item.url === "string" ? item.url : "";
+            const title = typeof item.title === "string" ? item.title : "";
+            const domain =
+              typeof item.domain === "string"
+                ? item.domain
+                : url
+                  ? (() => {
+                      try {
+                        return new URL(url).hostname.replace(/^www\./, "");
+                      } catch {
+                        return "";
+                      }
+                    })()
+                  : "";
+            if (!url || !title) continue;
+            nextSources.push({ title, url, domain });
+          }
+          if (nextSources.length > 0) {
+            setSources(nextSources);
+            setSourcesOpen(false);
+          }
         }
       }
       return;
@@ -459,6 +554,9 @@ export function OverlayApp() {
     setActing(false);
     setStatus("THINKING");
     setExpanded(true);
+    setLayoutFull(false);
+    setSources([]);
+    setSourcesOpen(false);
     setApprovalQueue([]);
     inFlightTools.current.clear();
 
@@ -494,7 +592,11 @@ export function OverlayApp() {
 
   if (!paired) {
     return (
-      <div className="overlay-shell">
+      <div
+        className={`overlay-shell${shellVisible ? " visible" : ""}${
+          shellHiding ? " hiding" : ""
+        }`}
+      >
         <div className="overlay-panel">
           <div className="overlay-core">
             <AurumPresence state="OFFLINE" size="md" presentation="offline" />
@@ -527,10 +629,20 @@ export function OverlayApp() {
   }
 
   const showBody =
-    reply || error || nowPlaying || streaming || pendingApproval;
+    reply || error || nowPlaying || streaming || pendingApproval || sources.length > 0;
+  const offerShowFull = shouldOfferShowFull(reply);
+  const layoutClass = !expanded
+    ? "layout-idle"
+    : layoutFull
+      ? "layout-full"
+      : "layout-compact";
 
   return (
-    <div className="overlay-shell">
+    <div
+      className={`overlay-shell ${layoutClass}${shellVisible ? " visible" : ""}${
+        shellHiding ? " hiding" : ""
+      }`}
+    >
       <div className="overlay-panel">
         <div className="overlay-core">
           <AurumPresence
@@ -566,7 +678,7 @@ export function OverlayApp() {
           }}
         />
         {showBody ? (
-          <div className="overlay-body">
+          <div className="overlay-body" ref={bodyRef}>
             {pendingApproval ? (
               <div className="overlay-approval" role="dialog" aria-modal="true">
                 <div className="overlay-approval-title">
@@ -618,8 +730,51 @@ export function OverlayApp() {
                 </div>
               </div>
             ) : null}
-            {!pendingApproval && reply.length > 280 ? (
+            {!pendingApproval && sources.length > 0 ? (
+              <div className="overlay-sources">
+                <button
+                  type="button"
+                  className="overlay-btn"
+                  onClick={() => setSourcesOpen((v) => !v)}
+                >
+                  {sourcesOpen
+                    ? "Hide sources"
+                    : `Sources · ${sources.length}`}
+                </button>
+                {sourcesOpen ? (
+                  <div className="overlay-sources-list">
+                    {sources.map((s) => (
+                      <div className="overlay-source-row" key={s.url}>
+                        <span className="overlay-source-title">
+                          {s.domain || s.title}
+                          {s.title && s.domain ? ` — ${s.title}` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          className="overlay-btn"
+                          onClick={() =>
+                            void window.aurumDesktop.openExternal?.(s.url)
+                          }
+                        >
+                          Open
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {!pendingApproval && (offerShowFull || reply.length > 120) ? (
               <div className="overlay-actions">
+                {offerShowFull ? (
+                  <button
+                    type="button"
+                    className="overlay-btn"
+                    onClick={() => setLayoutFull((v) => !v)}
+                  >
+                    {layoutFull ? "Collapse" : "Show full"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="overlay-btn"

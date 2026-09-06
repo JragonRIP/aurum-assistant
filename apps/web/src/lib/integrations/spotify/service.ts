@@ -980,8 +980,8 @@ export async function runSpotifyTool(opts: {
           if (current?.name) {
             setMediaContext(opts.conversationId, {
               isPlaying: true,
-              trackLabel: current.name,
-              artistLabel: current.artists?.join(", ") ?? null,
+              trackLabel: current.name ?? undefined,
+              artistLabel: current.artists?.join(", ") || undefined,
             });
           } else {
             setMediaContext(opts.conversationId, { isPlaying: true });
@@ -1007,8 +1007,8 @@ export async function runSpotifyTool(opts: {
           if (current?.name) {
             setMediaContext(opts.conversationId, {
               isPlaying: true,
-              trackLabel: current.name,
-              artistLabel: current.artists?.join(", ") ?? null,
+              trackLabel: current.name ?? undefined,
+              artistLabel: current.artists?.join(", ") || undefined,
             });
           } else {
             setMediaContext(opts.conversationId, { isPlaying: true });

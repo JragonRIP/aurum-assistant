@@ -59,7 +59,7 @@ describe("Windows capability broker registry", () => {
   it("enforces confirmation on destructive capability tools", () => {
     const r = createDefaultRegistry();
     assert.equal(r.get("terminate_process")?.permission, "CONFIRM");
-    assert.equal(r.get("close_application")?.permission, "CONFIRM");
+    assert.equal(r.get("close_application")?.permission, "SAFE_WRITE");
     assert.equal(r.get("set_clipboard_text")?.permission, "SAFE_WRITE");
     assert.equal(r.get("capture_screenshot")?.permission, "SAFE_WRITE");
     assert.equal(r.get("press_shortcut")?.permission, "SAFE_WRITE");

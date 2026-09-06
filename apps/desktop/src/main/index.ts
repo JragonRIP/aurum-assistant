@@ -24,10 +24,19 @@ import {
 import { OverlayChatBridge } from "./overlay-chat";
 import {
   AURUM_AUTOSTART_FLAG,
+  mainWindowConversationUrl,
   mainWindowEntryUrl,
   resolveSecondInstanceAction,
   resolveStartupWindowAction,
 } from "./launch-behavior";
+import {
+  clampOverlaySize,
+  OVERLAY_IDLE_SIZE,
+  positionOverlayBounds,
+  resolveOverlaySize,
+  type OverlayLayoutMode,
+  type OverlaySize,
+} from "./overlay-layout";
 import { DesktopUpdater } from "./updater";
 import type { UpdaterPublicState } from "./updater-state";
 import { buildTrayUpdateMenu } from "./updater-tray";
@@ -62,9 +71,6 @@ function loadBrandNativeImage(
 }
 
 const DEFAULT_DESKTOP_HOTKEY = "CommandOrControl+Space";
-
-const OVERLAY_IDLE = { width: 700, height: 140 } as const;
-const OVERLAY_EXPANDED = { width: 700, height: 420 } as const;
 const BOTTOM_GAP_PX = 36;
 
 let mainWindow: BrowserWindow | null = null;
@@ -72,9 +78,11 @@ let overlayWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let bridge: DeviceBridge | null = null;
 let overlayChat: OverlayChatBridge | null = null;
-let overlayExpanded = false;
+let overlayLayoutMode: OverlayLayoutMode = "idle";
+let overlayContentHeightPx = 0;
 let isQuitting = false;
 let desktopUpdater: DesktopUpdater | null = null;
+let overlayHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 const OpenExternalSchema = z.object({
   url: z.string().url(),
@@ -156,15 +164,40 @@ function createMainWindow(): BrowserWindow {
 }
 
 /** Full Aurum application (not the Ctrl+Space overlay). */
-function showMainWindow(): void {
+function showMainWindow(opts?: {
+  conversationId?: string | null;
+  hideOverlayFirst?: boolean;
+}): void {
+  if (opts?.hideOverlayFirst) {
+    hideOverlayImmediate();
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createMainWindow();
   }
+
+  const conversationId = opts?.conversationId;
+  if (conversationId) {
+    const target = mainWindowConversationUrl(getAurumWebUrl(), conversationId);
+    void mainWindow.loadURL(target);
+  }
+
   if (mainWindow.isMinimized()) {
     mainWindow.restore();
   }
   mainWindow.show();
+  // Brief always-on-top to beat focus-stealing / overlay z-order, then clear.
+  mainWindow.setAlwaysOnTop(true, "screen-saver");
   mainWindow.focus();
+  if (process.platform === "win32") {
+    mainWindow.moveTop();
+  }
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.focus();
+    }
+  }, 250);
 }
 
 function activeDisplay() {
@@ -172,23 +205,38 @@ function activeDisplay() {
   return screen.getDisplayNearestPoint(point);
 }
 
+function currentOverlaySize(): OverlaySize {
+  const { workArea } = activeDisplay();
+  return resolveOverlaySize({
+    mode: overlayLayoutMode,
+    contentHeightPx: overlayContentHeightPx,
+    workArea: { width: workArea.width, height: workArea.height },
+  });
+}
+
 function positionOverlay(
   win: BrowserWindow,
-  size: { width: number; height: number },
+  size: OverlaySize,
 ): void {
   const display = activeDisplay();
-  const { workArea } = display;
-  const width = Math.min(size.width, workArea.width - 24);
-  const height = Math.min(size.height, Math.floor(workArea.height * 0.55));
-  const x = Math.round(workArea.x + (workArea.width - width) / 2);
-  const y = Math.round(workArea.y + workArea.height - height - BOTTOM_GAP_PX);
-  win.setBounds({ x, y, width, height });
+  const bounds = positionOverlayBounds(size, display.workArea, BOTTOM_GAP_PX);
+  win.setBounds(bounds);
+}
+
+function applyOverlayLayout(): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  if (!overlayWindow.isVisible()) return;
+  positionOverlay(overlayWindow, currentOverlaySize());
 }
 
 function createOverlayWindow(): BrowserWindow {
+  const idle = clampOverlaySize(OVERLAY_IDLE_SIZE, {
+    width: 1920,
+    height: 1080,
+  });
   const win = new BrowserWindow({
-    width: OVERLAY_IDLE.width,
-    height: OVERLAY_IDLE.height,
+    width: idle.width,
+    height: idle.height,
     frame: false,
     transparent: true,
     resizable: false,
@@ -205,32 +253,52 @@ function createOverlayWindow(): BrowserWindow {
     },
   });
 
-  positionOverlay(win, OVERLAY_IDLE);
+  positionOverlay(win, idle);
   void win.loadFile(path.join(__dirname, "../renderer/index.html"));
   return win;
 }
 
 function showOverlay(): void {
+  if (overlayHideTimer) {
+    clearTimeout(overlayHideTimer);
+    overlayHideTimer = null;
+  }
   if (!overlayWindow || overlayWindow.isDestroyed()) {
     overlayWindow = createOverlayWindow();
   }
-  positionOverlay(
-    overlayWindow,
-    overlayExpanded ? OVERLAY_EXPANDED : OVERLAY_IDLE,
-  );
+  positionOverlay(overlayWindow, currentOverlaySize());
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.show();
   overlayWindow.focus();
   overlayWindow.webContents.send("aurum:overlay-shown", {
     paired: Boolean(loadDeviceCredential()),
     online: bridge?.state.online ?? false,
+    animate: true,
   });
 }
 
-function hideOverlay(): void {
+function hideOverlayImmediate(): void {
+  if (overlayHideTimer) {
+    clearTimeout(overlayHideTimer);
+    overlayHideTimer = null;
+  }
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.hide();
   }
+}
+
+/** Ask renderer to play exit animation, then hide. */
+function hideOverlay(): void {
+  if (!overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible()) {
+    hideOverlayImmediate();
+    return;
+  }
+  overlayWindow.webContents.send("aurum:overlay-will-hide");
+  if (overlayHideTimer) clearTimeout(overlayHideTimer);
+  // Fallback if renderer never ACKs (reduced-motion / crash).
+  overlayHideTimer = setTimeout(() => {
+    hideOverlayImmediate();
+  }, 320);
 }
 
 function registerHotkey(): void {
@@ -249,6 +317,7 @@ function registerHotkey(): void {
       overlayWindow.webContents.send("aurum:overlay-shown", {
         paired: Boolean(loadDeviceCredential()),
         online: bridge?.state.online ?? false,
+        animate: false,
       });
       return;
     }
@@ -551,21 +620,48 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("aurum:overlay-set-expanded", (_event, raw: unknown) => {
-    const parsed = z.object({ expanded: z.boolean() }).safeParse(raw);
+    const parsed = z
+      .object({
+        mode: z.enum(["idle", "compact", "full"]).optional(),
+        expanded: z.boolean().optional(),
+        contentHeightPx: z.number().finite().nonnegative().optional(),
+      })
+      .safeParse(raw);
     if (!parsed.success) return { ok: false };
-    overlayExpanded = parsed.data.expanded;
-    if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
-      positionOverlay(
-        overlayWindow,
-        overlayExpanded ? OVERLAY_EXPANDED : OVERLAY_IDLE,
-      );
+
+    if (parsed.data.mode) {
+      overlayLayoutMode = parsed.data.mode;
+    } else if (typeof parsed.data.expanded === "boolean") {
+      // Back-compat: expanded true → compact (legacy), false → idle
+      overlayLayoutMode = parsed.data.expanded ? "compact" : "idle";
     }
+    if (typeof parsed.data.contentHeightPx === "number") {
+      overlayContentHeightPx = parsed.data.contentHeightPx;
+    }
+    applyOverlayLayout();
+    return { ok: true, size: currentOverlaySize() };
+  });
+
+  ipcMain.handle("aurum:overlay-hide-complete", () => {
+    hideOverlayImmediate();
     return { ok: true };
   });
 
-  ipcMain.handle("aurum:open-in-aurum", () => {
-    showMainWindow();
-    return { ok: true };
+  ipcMain.handle("aurum:open-in-aurum", (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        conversationId: z.string().uuid().optional().nullable(),
+      })
+      .safeParse(raw ?? {});
+    const conversationId =
+      parsed.success && parsed.data.conversationId
+        ? parsed.data.conversationId
+        : ensureOverlayChat().getActiveConversationId();
+    showMainWindow({
+      conversationId,
+      hideOverlayFirst: true,
+    });
+    return { ok: true, conversationId };
   });
 }
 

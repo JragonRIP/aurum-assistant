@@ -492,7 +492,7 @@ export function useAurumSession() {
             if (soft) {
               if (id) {
                 patchActivity(id, {
-                  state: "done",
+                  state: "success",
                   label: event.error?.code === "RATE_LIMITED" ? "WAIT" : "CHECK",
                   detail,
                 });
