@@ -1,6 +1,6 @@
 {
   "name": "@aurum/desktop",
-  "version": "0.2.11",
+  "version": "0.3.0",
   "private": true,
   "description": "Aurum Console — Windows desktop companion for Aurum",
   "author": "Aurum",
