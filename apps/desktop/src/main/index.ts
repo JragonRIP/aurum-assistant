@@ -26,6 +26,7 @@ import { OverlayChatBridge } from "./overlay-chat";
 import { VoiceBridge } from "./voice-bridge";
 import { VoiceHotkeyController } from "./voice-hotkey";
 import { installMediaPermissionHandlers } from "./voice-permissions";
+import { authenticatedDeviceFetch } from "./authenticated-device-fetch";
 import {
   AURUM_AUTOSTART_FLAG,
   mainWindowConversationUrl,
@@ -609,14 +610,11 @@ function registerIpc(): void {
     }
     const folder = result.filePaths[0];
     const label = path.basename(folder);
-    const res = await fetch(
-      `${getAurumWebUrl()}/api/devices/${cred.deviceId}/roots`,
+    const res = await authenticatedDeviceFetch(
+      cred,
+      `/api/devices/${cred.deviceId}/roots`,
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${cred.deviceId}.${cred.deviceSecret}`,
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({ label, canonicalPath: folder }),
       },
     );

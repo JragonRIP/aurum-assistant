@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isPublicApiPath } from "@/lib/devices/public-paths";
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -44,11 +45,7 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/signup") ||
     pathname.startsWith("/setup");
   const isApiRoute = pathname.startsWith("/api/");
-  const isPublicApi =
-    pathname.startsWith("/api/health") ||
-    pathname.startsWith("/api/devices/bridge") ||
-    pathname.startsWith("/api/devices/assistant") ||
-    pathname === "/api/devices/pair";
+  const isPublicApi = isPublicApiPath(pathname);
   const isPublicAsset =
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icons") ||

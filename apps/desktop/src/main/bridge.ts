@@ -1,4 +1,5 @@
 import os from "node:os";
+import { authenticatedDeviceFetch } from "./authenticated-device-fetch";
 import { getAurumWebUrl } from "./config";
 import type { DeviceCredential } from "./credentials";
 import type { ApprovedRoot } from "./windows-tools";
@@ -34,10 +35,6 @@ export class DeviceBridge {
     this.state.online = false;
   }
 
-  private authHeader(): string {
-    return `Bearer ${this.cred.deviceId}.${this.cred.deviceSecret}`;
-  }
-
   private url(p: string): string {
     const base = getAurumWebUrl();
     if (this.cred.webUrl !== base) {
@@ -53,17 +50,17 @@ export class DeviceBridge {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     try {
-      const res = await fetch(this.url("/api/devices/bridge/heartbeat"), {
-        method: "POST",
-        headers: {
-          Authorization: this.authHeader(),
-          "Content-Type": "application/json",
+      const res = await authenticatedDeviceFetch(
+        this.cred,
+        "/api/devices/bridge/heartbeat",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            appVersion: "0.4.0",
+            osVersion: os.release(),
+          }),
         },
-        body: JSON.stringify({
-          appVersion: "0.4.0",
-          osVersion: os.release(),
-        }),
-      });
+      );
       if (!res.ok) {
         this.state.online = false;
         this.state.lastError = `heartbeat ${res.status}`;
@@ -95,11 +92,10 @@ export class DeviceBridge {
     this.polling = true;
     try {
       while (!this.stopped && this.state.online) {
-        const res = await fetch(
-          this.url("/api/devices/bridge/poll?wait=20000"),
-          {
-            headers: { Authorization: this.authHeader() },
-          },
+        const res = await authenticatedDeviceFetch(
+          this.cred,
+          "/api/devices/bridge/poll?wait=20000",
+          { method: "GET", json: false },
         );
         if (!res.ok) {
           this.onLog?.("poll_failed", { status: res.status });
@@ -172,14 +168,14 @@ export class DeviceBridge {
   }): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch(this.url("/api/devices/bridge/result"), {
-          method: "POST",
-          headers: {
-            Authorization: this.authHeader(),
-            "Content-Type": "application/json",
+        const res = await authenticatedDeviceFetch(
+          this.cred,
+          "/api/devices/bridge/result",
+          {
+            method: "POST",
+            body: JSON.stringify(body),
           },
-          body: JSON.stringify(body),
-        });
+        );
         if (res.ok) return;
         this.onLog?.("result_post_failed", {
           status: res.status,

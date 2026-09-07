@@ -40,7 +40,7 @@ describe("overlay approval security contracts", () => {
     const src = fs.readFileSync(bridge, "utf8");
     assert.match(src, /\/api\/devices\/assistant\/approvals\//);
     assert.match(src, /decideApproval/);
-    assert.match(src, /Authorization:\s*this\.authHeader\(cred\)/);
+    assert.match(src, /authenticatedDeviceFetch/);
     assert.match(src, /JSON\.stringify\(\{\s*decision\s*\}\)/);
     assert.match(src, /mapOverlayApprovalError/);
   });

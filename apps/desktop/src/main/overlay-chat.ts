@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { getAurumWebUrl } from "./config";
+import {
+  authenticatedDeviceFetch,
+} from "./authenticated-device-fetch";
 import type { DeviceCredential } from "./credentials";
 import { mapOverlayApprovalError } from "./overlay-approval-errors";
 import {
@@ -193,14 +195,11 @@ export class OverlayChatBridge {
     });
 
     try {
-      const res = await fetch(
-        `${this.base(cred)}/api/devices/assistant/approvals/${approvalId}/decide`,
+      const res = await authenticatedDeviceFetch(
+        cred,
+        `/api/devices/assistant/approvals/${approvalId}/decide`,
         {
           method: "POST",
-          headers: {
-            Authorization: this.authHeader(cred),
-            "Content-Type": "application/json",
-          },
           body: JSON.stringify({ decision }),
         },
       );
@@ -252,25 +251,12 @@ export class OverlayChatBridge {
     }
   }
 
-  private authHeader(cred: DeviceCredential): string {
-    return `Bearer ${cred.deviceId}.${cred.deviceSecret}`;
-  }
-
-  private base(_cred: DeviceCredential): string {
-    return getAurumWebUrl();
-  }
-
   private async ensureConversation(cred: DeviceCredential): Promise<string> {
     if (this.conversationId) return this.conversationId;
-    const res = await fetch(
-      `${this.base(cred)}/api/devices/assistant/conversations`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: this.authHeader(cred),
-          "Content-Type": "application/json",
-        },
-      },
+    const res = await authenticatedDeviceFetch(
+      cred,
+      "/api/devices/assistant/conversations",
+      { method: "POST", body: "{}" },
     );
     if (!res.ok) throw new Error("Could not create overlay session");
     const data = (await res.json()) as { conversation: { id: string } };
@@ -291,14 +277,11 @@ export class OverlayChatBridge {
   ): Promise<void> {
     try {
       const conversationId = await this.ensureConversation(cred);
-      const res = await fetch(
-        `${this.base(cred)}/api/devices/assistant/chat`,
+      const res = await authenticatedDeviceFetch(
+        cred,
+        "/api/devices/assistant/chat",
         {
           method: "POST",
-          headers: {
-            Authorization: this.authHeader(cred),
-            "Content-Type": "application/json",
-          },
           body: JSON.stringify({
             conversationId,
             content: text,
