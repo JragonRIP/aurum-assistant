@@ -50,41 +50,73 @@ function pythonInVenv() {
   return null;
 }
 
+function spawnPython(py, args, extra = {}) {
+  return spawnSync(py, args, {
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+    ...extra,
+  });
+}
+
+function failSpawn(label, result) {
+  fail(
+    `${label} failed (exit ${result.status}):\n${result.stdout || ""}\n${result.stderr || ""}`,
+  );
+}
+
+const ESPEAK_BOOTSTRAP = `
+import os
+try:
+    import espeakng_loader
+    espeakng_loader.make_library_available()
+    lib = espeakng_loader.get_library_path()
+    data = espeakng_loader.get_data_path()
+    if lib:
+        os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = lib
+        os.environ["PATH"] = os.path.dirname(lib) + os.pathsep + os.environ.get("PATH", "")
+    if data:
+        os.environ["ESPEAK_DATA_PATH"] = data
+except Exception as exc:
+    print("ESPEAK_BOOTSTRAP_WARN", exc)
+`.trim();
+
 function ensureVenv() {
   let py = pythonInVenv();
   if (py) return py;
   console.log("[voice-pack] Creating .venv…");
-  const created = spawnSync("py", ["-3.12", "-m", "venv", ".venv"], {
+  // CI (setup-python) exposes `python`; local Windows often has `py`.
+  const created = spawnSync("python", ["-m", "venv", ".venv"], {
     cwd: engineRoot,
     encoding: "utf8",
     shell: true,
   });
   if (created.status !== 0) {
-    const created2 = spawnSync("python", ["-m", "venv", ".venv"], {
+    const created2 = spawnSync("py", ["-3.12", "-m", "venv", ".venv"], {
       cwd: engineRoot,
       encoding: "utf8",
       shell: true,
     });
     if (created2.status !== 0) {
       fail(
-        `venv create failed:\n${created.stderr || ""}\n${created2.stderr || ""}`,
+        `venv create failed:\n${created.stderr || created.stdout || ""}\n${created2.stderr || created2.stdout || ""}`,
       );
     }
   }
   py = pythonInVenv();
   if (!py) fail("venv python missing after create");
   console.log("[voice-pack] pip install -r requirements.txt…");
-  const pip = spawnSync(
+  const pip = spawnPython(
     py,
     ["-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
-    { cwd: engineRoot, encoding: "utf8" },
+    { cwd: engineRoot },
   );
-  if (pip.status !== 0) fail(`pip upgrade failed:\n${pip.stderr}`);
-  const req = spawnSync(py, ["-m", "pip", "install", "-r", "requirements.txt"], {
-    cwd: engineRoot,
-    encoding: "utf8",
-  });
-  if (req.status !== 0) fail(`pip install failed:\n${req.stderr}`);
+  if (pip.status !== 0) failSpawn("pip upgrade", pip);
+  const req = spawnPython(
+    py,
+    ["-m", "pip", "install", "-r", "requirements.txt"],
+    { cwd: engineRoot },
+  );
+  if (req.status !== 0) failSpawn("pip install", req);
   return py;
 }
 
@@ -205,6 +237,7 @@ function seedModels(py, outRoot) {
 
   console.log("[voice-pack] Warming Kokoro to ensure model assets…");
   const code = `
+${ESPEAK_BOOTSTRAP}
 import os
 os.environ["HF_HOME"] = ${JSON.stringify(models)}
 os.environ["HUGGINGFACE_HUB_CACHE"] = ${JSON.stringify(hub)}
@@ -213,9 +246,8 @@ p = KPipeline(lang_code="b")
 list(p("Ready.", voice="bm_george"))
 print("WARM_OK")
 `.trim();
-  const warm = spawnSync(py, ["-c", code], {
+  const warm = spawnPython(py, ["-c", code], {
     cwd: engineRoot,
-    encoding: "utf8",
     env: {
       ...process.env,
       HF_HOME: models,
@@ -224,7 +256,7 @@ print("WARM_OK")
     timeout: 600_000,
   });
   if (warm.status !== 0 || !String(warm.stdout || "").includes("WARM_OK")) {
-    fail(`model warm failed:\n${warm.stdout}\n${warm.stderr}`);
+    failSpawn("model warm", warm);
   }
 }
 
@@ -250,16 +282,16 @@ function dirBytes(root) {
 
 function verifyBundledPython(pythonExe, outRoot) {
   console.log("[voice-pack] Verifying bundled python imports…");
-  const check = spawnSync(
+  const check = spawnPython(
     pythonExe,
     [
       "-c",
-      "import kokoro, espeakng_loader, torch, soundfile, numpy; espeakng_loader.make_library_available(); print('IMPORT_OK')",
+      `${ESPEAK_BOOTSTRAP}\nimport kokoro, espeakng_loader, torch, soundfile, numpy\nprint("IMPORT_OK")`,
     ],
-    { encoding: "utf8", cwd: outRoot },
+    { cwd: outRoot },
   );
   if (check.status !== 0 || !String(check.stdout || "").includes("IMPORT_OK")) {
-    fail(`bundled import check failed:\n${check.stdout}\n${check.stderr}`);
+    failSpawn("bundled import check", check);
   }
 }
 
@@ -340,11 +372,12 @@ async function main() {
   console.log("[voice-pack] Offline bundled synth smoke…");
   const models = path.join(outRoot, "models");
   const hub = path.join(models, "hub");
-  const smoke = spawnSync(
+  const smoke = spawnPython(
     bundledPy,
     [
       "-c",
       `
+${ESPEAK_BOOTSTRAP}
 import os
 os.environ["HF_HOME"] = ${JSON.stringify(models)}
 os.environ["HUGGINGFACE_HUB_CACHE"] = ${JSON.stringify(hub)}
@@ -356,7 +389,6 @@ print("OFFLINE_OK")
 `.trim(),
     ],
     {
-      encoding: "utf8",
       cwd: outRoot,
       env: {
         ...process.env,
@@ -368,7 +400,7 @@ print("OFFLINE_OK")
     },
   );
   if (smoke.status !== 0 || !String(smoke.stdout || "").includes("OFFLINE_OK")) {
-    fail(`offline bundled smoke failed:\n${smoke.stdout}\n${smoke.stderr}`);
+    failSpawn("offline bundled smoke", smoke);
   }
 
   const marker = {

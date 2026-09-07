@@ -59,7 +59,10 @@ jobs:
         run: npm run build --workspace=@aurum/desktop
 
       - name: Prepare packaged voice engine
-        run: node apps/voice-engine/scripts/prepare-packaged-runtime.mjs
+        env:
+          PYTHONUNBUFFERED: "1"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python --version && node apps/voice-engine/scripts/prepare-packaged-runtime.mjs
 
       - name: Stage packaged app
         run: node apps/desktop/scripts/stage-pack.mjs
