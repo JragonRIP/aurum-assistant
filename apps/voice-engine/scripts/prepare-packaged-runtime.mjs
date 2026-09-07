@@ -147,12 +147,19 @@ function copyFiltered(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   fs.cpSync(src, dest, {
     recursive: true,
+    dereference: true,
+    errorOnExist: false,
     filter: (p) => {
       const base = path.basename(p);
       if (base === "__pycache__" || base.endsWith(".pyc")) return false;
       if (base === "tests" || base === "test") return false;
       if (base === ".git") return false;
-      return true;
+      try {
+        fs.statSync(p);
+        return true;
+      } catch {
+        return false;
+      }
     },
   });
 }
@@ -274,10 +281,21 @@ function writeNotices(outRoot) {
 function dirBytes(root) {
   let total = 0;
   const walk = (p) => {
-    for (const ent of fs.readdirSync(p, { withFileTypes: true })) {
+    let ents;
+    try {
+      ents = fs.readdirSync(p, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of ents) {
       const full = path.join(p, ent.name);
-      if (ent.isDirectory()) walk(full);
-      else total += fs.statSync(full).size;
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) walk(full);
+        else total += st.size;
+      } catch {
+        /* dangling HF snapshot pointers */
+      }
     }
   };
   walk(root);
