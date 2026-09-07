@@ -80,6 +80,32 @@ describe("process protection", () => {
   });
 });
 
+describe("vault path safety", () => {
+  it("blocks traversal and resolves canonical docs", async () => {
+    const {
+      assertSafeVaultRelativePath,
+      resolveVaultRelativePath,
+      upsertManagedSection,
+    } = await import("./vault-write");
+    assert.equal(
+      resolveVaultRelativePath("preferences"),
+      "00 - Aurum/Preferences.md",
+    );
+    assert.throws(() => assertSafeVaultRelativePath("../secrets.md"));
+    assert.throws(() => assertSafeVaultRelativePath("evil.exe"));
+    const merged = upsertManagedSection(
+      "# Title\n\nUser note\n",
+      "status",
+      "Active",
+    );
+    assert.match(merged, /User note/);
+    assert.match(merged, /AURUM:START status/);
+    const again = upsertManagedSection(merged, "status", "Updated");
+    assert.match(again, /Updated/);
+    assert.match(again, /User note/);
+  });
+});
+
 describe("audit log sanitization", () => {
   it("redacts clipboard/text bodies", () => {
     clearAuditMemory();

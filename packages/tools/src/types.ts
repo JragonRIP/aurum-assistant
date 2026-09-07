@@ -83,6 +83,12 @@ export interface ToolExecutionContext {
     input: Record<string, unknown>,
     toolCtx?: ToolExecutionContext,
   ) => Promise<ToolResult>;
+  /** Host injects long-term memory actions (never model-direct DB writes). */
+  runMemoryAction?: (
+    action: string,
+    input: Record<string, unknown>,
+    toolCtx?: ToolExecutionContext,
+  ) => Promise<ToolResult>;
   /** Set by executor for the active tool call */
   currentExecutionId?: string;
   /**

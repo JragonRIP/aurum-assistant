@@ -72,12 +72,11 @@ describe("web tools registry", () => {
     assert.equal(r.get("open_search")?.permission, "SAFE_WRITE");
   });
 
-  it("close_application is SAFE_WRITE; terminate_process stays CONFIRM", () => {
+  it("registers memory tools as READ/SAFE_WRITE without shell", () => {
     const r = createDefaultRegistry();
-    assert.equal(r.get("close_application")?.permission, "SAFE_WRITE");
-    assert.equal(r.get("close_window")?.permission, "SAFE_WRITE");
-    assert.equal(r.get("terminate_process")?.permission, "CONFIRM");
-    assert.equal(r.get("shutdown_pc")?.permission, "CONFIRM");
-    assert.equal(r.get("restart_pc")?.permission, "CONFIRM");
+    assert.equal(r.get("memory_search")?.permission, "READ");
+    assert.equal(r.get("memory_remember")?.permission, "SAFE_WRITE");
+    assert.equal(r.get("memory_forget")?.permission, "SAFE_WRITE");
+    assert.equal(r.get("run_command"), undefined);
   });
 });

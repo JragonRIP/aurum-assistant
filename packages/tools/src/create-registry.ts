@@ -11,6 +11,7 @@ import {
 import { registerDesktopTools } from "./desktop-tools";
 import { registerSpotifyTools } from "./spotify-tools";
 import { registerWebTools } from "./web-tools";
+import { registerMemoryTools } from "./memory-tools";
 import { registerWindowsCapabilityTools } from "./windows-capability-tools";
 import { registerWindowsSystemTools } from "./windows-system-tools";
 
@@ -25,6 +26,7 @@ export function createDefaultRegistry(): ToolRegistry {
   registry.register(createCreateNoteTool());
   registry.register(createSearchNotesTool());
   registerWebTools(registry);
+  registerMemoryTools(registry);
   registerDesktopTools(registry);
   registerWindowsSystemTools(registry);
   registerWindowsCapabilityTools(registry);
@@ -38,4 +40,5 @@ export { registerWindowsSystemTools } from "./windows-system-tools";
 export { registerWindowsCapabilityTools } from "./windows-capability-tools";
 export { registerSpotifyTools } from "./spotify-tools";
 export { registerWebTools } from "./web-tools";
+export { registerMemoryTools } from "./memory-tools";
 export { clampVolumePercent, applyRelativeVolume } from "./volume";

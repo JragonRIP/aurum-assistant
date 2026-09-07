@@ -85,7 +85,7 @@ export const TaskPrioritySchema = z.enum([
 ]);
 export type TaskPriority = z.infer<typeof TaskPrioritySchema>;
 
-/** Memory categories */
+/** Memory categories (legacy Phase 1 — still stored for compatibility) */
 export const MemoryCategorySchema = z.enum([
   "PERSONAL_PREFERENCE",
   "BUSINESS",
@@ -95,6 +95,54 @@ export const MemoryCategorySchema = z.enum([
   "GENERAL",
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
+
+/** Memory System v1 types */
+export const MemoryTypeSchema = z.enum([
+  "PROFILE",
+  "PREFERENCE",
+  "PERSON",
+  "BUSINESS",
+  "PROJECT",
+  "GOAL",
+  "DECISION",
+  "ROUTINE",
+  "FACT",
+  "RELATIONSHIP",
+  "LOCATION",
+  "ASSET",
+  "INTEREST",
+  "CONSTRAINT",
+  "REFERENCE",
+  "TEMPORARY",
+]);
+export type MemoryType = z.infer<typeof MemoryTypeSchema>;
+
+export const MemoryImportanceSchema = z.enum([
+  "TEMPORARY",
+  "USEFUL",
+  "IMPORTANT",
+  "PINNED",
+]);
+export type MemoryImportance = z.infer<typeof MemoryImportanceSchema>;
+
+export const MemoryStatusSchema = z.enum([
+  "ACTIVE",
+  "SUPERSEDED",
+  "ARCHIVED",
+  "DELETED",
+]);
+export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
+
+export const MemorySourceTypeSchema = z.enum([
+  "USER_EXPLICIT",
+  "USER_CORRECTION",
+  "INFERRED_FROM_CONVERSATION",
+  "SYSTEM_MIGRATED",
+  "MANUAL_EDIT",
+]);
+export type MemorySourceType = z.infer<typeof MemorySourceTypeSchema>;
+
+export const RESPONSE_DETAIL_CANONICAL_KEY = "preference:response_detail";
 
 /** Lead pipeline statuses */
 export const LeadStatusSchema = z.enum([

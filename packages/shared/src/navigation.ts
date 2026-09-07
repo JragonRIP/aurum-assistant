@@ -132,7 +132,7 @@ export const SYSTEM_ITEMS: readonly NavItem[] = [
     href: "/memory",
     group: "system",
     phase: 6,
-    connected: false,
+    connected: true,
   },
   {
     id: "automations",

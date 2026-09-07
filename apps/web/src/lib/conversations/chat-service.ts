@@ -22,6 +22,14 @@ import {
 } from "@/lib/devices/queries";
 import { runSpotifyTool } from "@/lib/integrations/spotify/service";
 import { runWebAction } from "@/lib/integrations/web/research";
+import { runMemoryAction } from "@/lib/memory/actions";
+import {
+  formatMemoriesForPrompt,
+  getResponseDetailPreference,
+  listRelevantMemories,
+} from "@/lib/memory/service";
+import { extractInferredMemoryCandidates } from "@/lib/memory/extract";
+import { applyMemoryCandidate } from "@/lib/memory/service";
 import {
   getConversationForUser,
   getMessageForUser,
@@ -337,11 +345,40 @@ export function createChatStream(options: {
         });
 
         const timezone = options.timezone ?? "America/Chicago";
-        const instructions = buildSystemPrompt({
-          deviceType: options.deviceType ?? "WEB",
-          timezone,
-          now: new Date(),
-        });
+        let responseDetailPreference:
+          | "concise"
+          | "balanced"
+          | "detailed" = "concise";
+        let memoryBlock = "";
+        try {
+          responseDetailPreference = await getResponseDetailPreference(
+            options.supabase,
+            options.userId,
+          );
+          const relevant = await listRelevantMemories(
+            options.supabase,
+            options.userId,
+            options.content ?? "",
+            6,
+          );
+          memoryBlock = formatMemoriesForPrompt(relevant);
+        } catch (err) {
+          console.warn("[aurum:memory] retrieval skipped", {
+            message: err instanceof Error ? err.message.slice(0, 160) : "error",
+          });
+        }
+
+        const instructions = [
+          buildSystemPrompt({
+            deviceType: options.deviceType ?? "WEB",
+            timezone,
+            now: new Date(),
+            responseDetailPreference,
+          }),
+          memoryBlock,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
 
         send({ type: "assistant_start", generationId });
         mark("gemini_request_started");
@@ -455,6 +492,15 @@ export function createChatStream(options: {
                 action,
                 input,
                 signal: toolCtx?.signal ?? options.signal,
+              });
+            },
+            runMemoryAction: async (action, input) => {
+              return runMemoryAction({
+                supabase: options.supabase,
+                userId: options.userId,
+                action,
+                input,
+                conversationId: options.conversationId,
               });
             },
           },
@@ -710,6 +756,29 @@ export function createChatStream(options: {
             // revalidatePath may throw outside request scope in some runtimes
           }
         }
+
+        // Post-turn memory extraction — never blocks the user-facing response path
+        // (runs after persistence; failures are silent for inferred memories).
+        void (async () => {
+          try {
+            const candidates = extractInferredMemoryCandidates(
+              options.content ?? "",
+              trimmed,
+            );
+            for (const c of candidates) {
+              if (c.action === "IGNORE") continue;
+              await applyMemoryCandidate(options.supabase, options.userId, c, {
+                explicit: false,
+                sourceId: options.conversationId,
+              });
+            }
+          } catch (err) {
+            console.warn("[aurum:memory] extraction skipped", {
+              message:
+                err instanceof Error ? err.message.slice(0, 160) : "error",
+            });
+          }
+        })();
 
         controller.close();
         return;

@@ -53,6 +53,11 @@ const EXACT_ACTIVITY: Record<string, string> = {
   get_current_time: "Checking the time...",
   capture_screenshot: "Capturing screen...",
   lock_pc: "Locking PC...",
+  memory_search: "Searching memory...",
+  memory_get: "Loading memory...",
+  memory_remember: "Remembering...",
+  memory_update: "Updating memory...",
+  memory_forget: "Forgetting...",
 };
 
 const PREFIX_ACTIVITY: Array<{ prefix: string; label: string }> = [

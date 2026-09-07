@@ -89,6 +89,7 @@ const MUTATING_PERMISSION: Record<string, string> = {
   open_file_with_app: "SAFE_WRITE",
   reveal_in_explorer: "SAFE_WRITE",
   run_workspace_routine: "SAFE_WRITE",
+  vault_write_managed_file: "SAFE_WRITE",
 };
 
 /**
@@ -198,6 +199,10 @@ async function dispatch(
       });
     case "get_file_metadata":
       return getFileMetadata(String(payload.path ?? ""), ctx.approvedRoots);
+    case "vault_write_managed_file": {
+      const { vaultWriteManagedFile } = await import("./vault-write");
+      return vaultWriteManagedFile(payload, ctx.approvedRoots);
+    }
     case "reveal_in_explorer":
       return revealInExplorer(String(payload.path ?? ""), ctx.approvedRoots);
     case "open_trusted_file":

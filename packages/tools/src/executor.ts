@@ -143,6 +143,10 @@ export function resolveToolActivityLabel(
   if (toolName === "restart_pc") return "Restarting PC";
   if (toolName === "web_search") return "Searching the web";
   if (toolName === "web_read_page") return "Reading sources";
+  if (toolName === "memory_search") return "Searching memory";
+  if (toolName === "memory_remember") return "Remembering";
+  if (toolName === "memory_forget") return "Forgetting";
+  if (toolName === "memory_update") return "Updating memory";
   return fallback;
 }
 

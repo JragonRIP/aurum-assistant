@@ -81,6 +81,14 @@ export {
   createSpotifySetVolumeTool,
 } from "./spotify-tools";
 export {
+  registerMemoryTools,
+  createMemorySearchTool,
+  createMemoryGetTool,
+  createMemoryRememberTool,
+  createMemoryUpdateTool,
+  createMemoryForgetTool,
+} from "./memory-tools";
+export {
   createGetCurrentTimeTool,
   getCurrentTimeInputSchema,
   createCreateTaskTool,

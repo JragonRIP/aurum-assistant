@@ -49,6 +49,16 @@ export async function getSystemStatus(): Promise<SystemStatusSnapshot> {
       snapshot.displayName = profile.display_name;
     }
 
+    // Memory v1 service is live when the memories table is queryable.
+    const { error: memoryError } = await supabase
+      .from("memories")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "ACTIVE");
+    if (!memoryError) {
+      snapshot.memory = "READY";
+    }
+
     const { data: devices, error } = await supabase
       .from("devices")
       .select("id, device_type, name, is_online, last_seen_at, status")
