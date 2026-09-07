@@ -65,6 +65,25 @@ describe("extraction", () => {
     assert.ok(c.some((x) => x.canonicalKey === "preference:response_detail"));
   });
 
+  it("extracts permanent sarcasm preference", () => {
+    const c = extractExplicitMemoryCandidates(
+      "From now on be a little more sarcastic.",
+    );
+    assert.ok(c.some((x) => x.canonicalKey === "preference:sarcasm_level"));
+  });
+
+  it("does not persist temporary tone as personality memory", () => {
+    const c = extractExplicitMemoryCandidates("Be serious for now.");
+    assert.equal(
+      c.filter((x) =>
+        /preference:(humor_level|sarcasm_level|formality)/.test(
+          x.canonicalKey ?? "",
+        ),
+      ).length,
+      0,
+    );
+  });
+
   it("extracts remember-that", () => {
     const c = extractExplicitMemoryCandidates(
       "Remember that my target budget is $300k.",

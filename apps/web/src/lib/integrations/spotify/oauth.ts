@@ -10,6 +10,7 @@ export const SPOTIFY_SCOPES = [
   "playlist-modify-public",
   "user-library-read",
   "user-library-modify",
+  "ugc-image-upload",
 ] as const;
 
 export type SpotifyScope = (typeof SPOTIFY_SCOPES)[number];

@@ -7,6 +7,7 @@ import {
   Menu,
   nativeImage,
   screen,
+  session,
   shell,
   Tray,
 } from "electron";
@@ -22,6 +23,9 @@ import {
   type DeviceCredential,
 } from "./credentials";
 import { OverlayChatBridge } from "./overlay-chat";
+import { VoiceBridge } from "./voice-bridge";
+import { VoiceHotkeyController } from "./voice-hotkey";
+import { installMediaPermissionHandlers } from "./voice-permissions";
 import {
   AURUM_AUTOSTART_FLAG,
   mainWindowConversationUrl,
@@ -78,6 +82,10 @@ let overlayWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let bridge: DeviceBridge | null = null;
 let overlayChat: OverlayChatBridge | null = null;
+let voiceBridge: VoiceBridge | null = null;
+let voiceHotkey: VoiceHotkeyController | null = null;
+let overlayVisibleAtPttPress = false;
+let overlayFocusedAtPttPress = false;
 let overlayLayoutMode: OverlayLayoutMode = "idle";
 let overlayContentHeightPx = 0;
 let isQuitting = false;
@@ -127,6 +135,13 @@ function ensureOverlayChat(): OverlayChatBridge {
     );
   }
   return overlayChat;
+}
+
+function ensureVoiceBridge(): VoiceBridge {
+  if (!voiceBridge) {
+    voiceBridge = new VoiceBridge(() => loadDeviceCredential());
+  }
+  return voiceBridge;
 }
 
 function createMainWindow(): BrowserWindow {
@@ -244,6 +259,7 @@ function createOverlayWindow(): BrowserWindow {
     alwaysOnTop: true,
     show: false,
     focusable: true,
+    hasShadow: false,
     backgroundColor: "#00000000",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
@@ -251,6 +267,15 @@ function createOverlayWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  // Stay visible above normal apps without stealing permanent focus ownership.
+  // Clicking another app may blur Aurum; do not hide or remount on blur.
+  win.setAlwaysOnTop(true, "screen-saver");
+  win.on("blur", () => {
+    if (!win.isDestroyed() && win.isVisible()) {
+      win.setAlwaysOnTop(true, "screen-saver");
+    }
   });
 
   positionOverlay(win, idle);
@@ -302,26 +327,66 @@ function hideOverlay(): void {
 }
 
 function registerHotkey(): void {
-  const ok = globalShortcut.register(DEFAULT_DESKTOP_HOTKEY, () => {
-    if (!overlayWindow || overlayWindow.isDestroyed()) {
-      overlayWindow = createOverlayWindow();
-      showOverlay();
-      return;
-    }
-    if (!overlayWindow.isVisible()) {
-      showOverlay();
-      return;
-    }
-    if (!overlayWindow.isFocused()) {
+  voiceHotkey?.dispose();
+  voiceHotkey = new VoiceHotkeyController({
+    onEnsureOverlayVisible: () => {
+      overlayVisibleAtPttPress = Boolean(
+        overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible(),
+      );
+      overlayFocusedAtPttPress = Boolean(
+        overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isFocused(),
+      );
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        overlayWindow = createOverlayWindow();
+      }
+      if (!overlayWindow.isVisible()) {
+        showOverlay();
+      } else if (!overlayWindow.isFocused()) {
+        overlayWindow.focus();
+        overlayWindow.webContents.send("aurum:overlay-shown", {
+          paired: Boolean(loadDeviceCredential()),
+          online: bridge?.state.online ?? false,
+          animate: false,
+        });
+      }
+    },
+    onTapToggle: () => {
+      // Tap: open-or-focus text overlay, or hide if it was already focused.
+      if (!overlayWindow || overlayWindow.isDestroyed()) {
+        overlayWindow = createOverlayWindow();
+        showOverlay();
+        return;
+      }
+      if (!overlayVisibleAtPttPress) {
+        // Just opened for this tap — keep open for typing.
+        overlayWindow.focus();
+        overlayWindow.webContents.send("aurum:overlay-focus-input");
+        return;
+      }
+      if (overlayFocusedAtPttPress) {
+        hideOverlay();
+        return;
+      }
       overlayWindow.focus();
-      overlayWindow.webContents.send("aurum:overlay-shown", {
-        paired: Boolean(loadDeviceCredential()),
-        online: bridge?.state.online ?? false,
-        animate: false,
-      });
-      return;
-    }
-    hideOverlay();
+      overlayWindow.webContents.send("aurum:overlay-focus-input");
+    },
+    onStartListening: () => {
+      if (!overlayWindow || overlayWindow.isDestroyed()) return;
+      if (!overlayWindow.isVisible()) showOverlay();
+      overlayWindow.webContents.send("aurum:voice-ptt", { phase: "start" });
+    },
+    onStopAndSubmit: () => {
+      if (!overlayWindow || overlayWindow.isDestroyed()) return;
+      overlayWindow.webContents.send("aurum:voice-ptt", { phase: "stop" });
+    },
+    onCancelCapture: () => {
+      if (!overlayWindow || overlayWindow.isDestroyed()) return;
+      overlayWindow.webContents.send("aurum:voice-ptt", { phase: "cancel" });
+    },
+  });
+
+  const ok = globalShortcut.register(DEFAULT_DESKTOP_HOTKEY, () => {
+    voiceHotkey?.onAccelerator();
   });
   if (!ok) {
     console.error(`[Aurum] Failed to register hotkey: ${DEFAULT_DESKTOP_HOTKEY}`);
@@ -443,7 +508,7 @@ function registerIpc(): void {
   ipcMain.handle("aurum:get-info", () => ({
     product: PRODUCT.name,
     version: app.getVersion(),
-    phase: 4.3,
+    phase: 5,
     platform: process.platform,
     webUrl: getAurumWebUrl(),
     paired: Boolean(loadDeviceCredential()),
@@ -596,10 +661,86 @@ function registerIpc(): void {
     return ensureOverlayChat().start(parsed.data.text);
   });
 
+  ipcMain.handle("aurum:voice-transcribe", async (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        bytes: z.any(),
+        mimeType: z.string().min(3).max(80),
+      })
+      .safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: "Invalid audio payload", code: "VALIDATION_ERROR" };
+    }
+    const rawBytes = parsed.data.bytes;
+    let bytes: Buffer;
+    if (Buffer.isBuffer(rawBytes)) {
+      bytes = rawBytes;
+    } else if (rawBytes instanceof Uint8Array) {
+      bytes = Buffer.from(rawBytes);
+    } else if (rawBytes instanceof ArrayBuffer) {
+      bytes = Buffer.from(rawBytes);
+    } else if (Array.isArray(rawBytes)) {
+      bytes = Buffer.from(rawBytes);
+    } else {
+      return { ok: false, error: "Invalid audio payload", code: "VALIDATION_ERROR" };
+    }
+    if (bytes.byteLength > 4 * 1024 * 1024) {
+      return { ok: false, error: "Audio too large.", code: "too_large" };
+    }
+    return ensureVoiceBridge().transcribe({
+      bytes,
+      mimeType: parsed.data.mimeType,
+    });
+  });
+
+  ipcMain.handle("aurum:voice-synthesize", async (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        text: z.string().min(1).max(4000),
+        voice: z.string().min(1).max(64).optional(),
+      })
+      .safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: "Invalid text", code: "VALIDATION_ERROR" };
+    }
+    return ensureVoiceBridge().synthesize(parsed.data);
+  });
+
+  ipcMain.handle("aurum:voice-cancel-ptt", () => {
+    voiceHotkey?.cancel();
+    return { ok: true };
+  });
+
   ipcMain.handle("aurum:overlay-chat-cancel", (_event, raw: unknown) => {
     const parsed = z.object({ id: z.string().uuid() }).safeParse(raw);
     if (!parsed.success) return { ok: false };
     ensureOverlayChat().cancel(parsed.data.id);
+    return { ok: true };
+  });
+
+  ipcMain.handle("aurum:overlay-turn-state", () => {
+    return ensureOverlayChat().getTurnSnapshot();
+  });
+
+  ipcMain.handle("aurum:overlay-turn-patch", (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        pendingApproval: z
+          .object({
+            approvalId: z.string().uuid(),
+            tool: z.string().min(1).max(120),
+            label: z.string().min(1).max(200),
+            detail: z.string().max(500),
+            confirmVerb: z.string().min(1).max(40),
+          })
+          .nullable()
+          .optional(),
+        reply: z.string().max(20_000).optional(),
+        warning: z.string().max(500).nullable().optional(),
+      })
+      .safeParse(raw);
+    if (!parsed.success) return { ok: false };
+    ensureOverlayChat().patchTurn(parsed.data);
     return { ok: true };
   });
 
@@ -673,15 +814,20 @@ app.whenReady().then(() => {
     app.setAppUserModelId("com.aurum.assistant");
   }
 
+  installMediaPermissionHandlers(session.defaultSession);
+
   desktopUpdater = new DesktopUpdater(app.getVersion(), {
     onStateChange: (state) => broadcastUpdaterState(state),
     beforeQuitAndInstall: () => {
       isQuitting = true;
       desktopUpdater?.stop();
       globalShortcut.unregisterAll();
+      voiceHotkey?.dispose();
+      voiceHotkey = null;
       bridge?.stop();
       bridge = null;
       overlayChat = null;
+      voiceBridge = null;
       if (overlayWindow && !overlayWindow.isDestroyed()) {
         overlayWindow.hide();
       }
@@ -713,12 +859,16 @@ app.on("before-quit", () => {
   isQuitting = true;
   desktopUpdater?.stop();
   globalShortcut.unregisterAll();
+  voiceHotkey?.dispose();
+  voiceHotkey = null;
   bridge?.stop();
   bridge = null;
 });
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  voiceHotkey?.dispose();
+  voiceHotkey = null;
   bridge?.stop();
   desktopUpdater?.stop();
 });

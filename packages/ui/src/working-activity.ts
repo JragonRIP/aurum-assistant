@@ -5,17 +5,23 @@
 
 export type WorkingPhase =
   | "idle"
+  | "listening"
+  | "transcribing"
   | "thinking"
   | "acting"
   | "researching"
   | "responding"
+  | "speaking"
   | "waiting_approval"
   | "waiting_user"
   | "error";
 
 const EXACT_ACTIVITY: Record<string, string> = {
   web_search: "Searching the web...",
+  web_image_search: "Searching for images...",
   web_read_page: "Reading sources...",
+  web_download_file: "Downloading file...",
+  list_approved_folders: "Checking approved folders...",
   open_search: "Opening search...",
   open_url: "Opening website...",
   open_application: "Opening app...",
@@ -28,6 +34,14 @@ const EXACT_ACTIVITY: Record<string, string> = {
   spotify_search_albums: "Searching Spotify...",
   spotify_search_artists: "Searching Spotify...",
   spotify_resolve_playlist: "Finding your playlist...",
+  spotify_create_playlist: "Creating playlist...",
+  spotify_add_playlist_items: "Adding playlist tracks...",
+  spotify_add_tracks_to_playlist: "Adding playlist tracks...",
+  spotify_remove_playlist_items: "Removing playlist tracks...",
+  spotify_remove_tracks_from_playlist: "Removing playlist tracks...",
+  spotify_set_playlist_cover: "Updating playlist cover...",
+  spotify_get_queue: "Checking queue...",
+  spotify_clear_queue: "Checking queue...",
   spotify_play_track: "Starting playback...",
   spotify_play_album: "Starting playback...",
   spotify_play_playlist: "Starting playback...",
@@ -74,9 +88,13 @@ export function shouldShowIdlePrompt(opts: {
   awaitingApproval: boolean;
   awaitingUser: boolean;
   error: boolean;
+  listening?: boolean;
+  speaking?: boolean;
+  transcribing?: boolean;
 }): boolean {
   if (opts.awaitingApproval || opts.awaitingUser || opts.error) return false;
   if (opts.streaming || opts.acting) return false;
+  if (opts.listening || opts.speaking || opts.transcribing) return false;
   return true;
 }
 
@@ -128,12 +146,18 @@ export function resolveWorkingActivity(opts: {
 
 export function defaultPhaseActivity(phase: WorkingPhase): string | null {
   switch (phase) {
+    case "listening":
+      return "Release Space to send";
+    case "transcribing":
+      return "Transcribing…";
     case "thinking":
       return "Looking into that...";
     case "researching":
       return "Searching the web...";
     case "acting":
       return "Working on that...";
+    case "speaking":
+      return "Speaking…";
     case "responding":
       return null;
     case "waiting_approval":
@@ -155,10 +179,16 @@ export function resolveWorkingHeadline(opts: {
   acting: boolean;
   streaming: boolean;
   hasReply: boolean;
+  listening?: boolean;
+  transcribing?: boolean;
+  speaking?: boolean;
 }): string {
   if (opts.awaitingApproval) return "WAITING FOR APPROVAL";
   if (opts.awaitingUser) return "NEED YOUR INPUT";
-  if (opts.error && !opts.streaming) return "ERROR";
+  if (opts.error && !opts.streaming && !opts.listening) return "ERROR";
+  if (opts.listening) return "LISTENING";
+  if (opts.transcribing) return "TRANSCRIBING";
+  if (opts.speaking) return "SPEAKING";
   if (opts.researching) return "RESEARCHING";
   if (opts.acting) return "ACTING";
   if (opts.streaming && opts.hasReply) return "RESPONDING";

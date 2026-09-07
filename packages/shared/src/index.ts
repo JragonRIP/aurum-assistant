@@ -5,3 +5,4 @@ export * from "./entities";
 export * from "./device-protocol";
 export * from "./recents";
 export * from "./presence";
+export * from "./voice";

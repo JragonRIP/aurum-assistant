@@ -64,6 +64,45 @@ const aurumDesktop = {
   cancelOverlayChat: (id: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:overlay-chat-cancel", { id }),
 
+  getOverlayTurnState: (): Promise<{
+    executionId: string | null;
+    conversationId: string | null;
+    status:
+      | "IDLE"
+      | "RUNNING"
+      | "WAITING_FOR_APPROVAL"
+      | "WAITING_FOR_USER"
+      | "COMPLETED"
+      | "FAILED"
+      | "CANCELLED";
+    activity: string | null;
+    reply: string;
+    warning: string | null;
+    error: string | null;
+    pendingApproval: {
+      approvalId: string;
+      tool: string;
+      label: string;
+      detail: string;
+      confirmVerb: string;
+    } | null;
+    inputMode: "text" | "voice" | null;
+    updatedAt: number;
+  }> => ipcRenderer.invoke("aurum:overlay-turn-state"),
+
+  patchOverlayTurn: (patch: {
+    pendingApproval?: {
+      approvalId: string;
+      tool: string;
+      label: string;
+      detail: string;
+      confirmVerb: string;
+    } | null;
+    reply?: string;
+    warning?: string | null;
+  }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("aurum:overlay-turn-patch", patch),
+
   decideOverlayApproval: (
     approvalId: string,
     decision: "approve" | "reject",
@@ -178,6 +217,58 @@ const aurumDesktop = {
       ipcRenderer.removeListener("aurum:overlay-chat-event", listener);
     };
   },
+
+  onVoicePtt: (
+    callback: (payload: { phase: "start" | "stop" | "cancel" }) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { phase: "start" | "stop" | "cancel" },
+    ): void => {
+      callback(payload);
+    };
+    ipcRenderer.on("aurum:voice-ptt", listener);
+    return () => {
+      ipcRenderer.removeListener("aurum:voice-ptt", listener);
+    };
+  },
+
+  onOverlayFocusInput: (callback: () => void): (() => void) => {
+    const listener = (): void => {
+      callback();
+    };
+    ipcRenderer.on("aurum:overlay-focus-input", listener);
+    return () => {
+      ipcRenderer.removeListener("aurum:overlay-focus-input", listener);
+    };
+  },
+
+  voiceTranscribe: (opts: {
+    bytes: Uint8Array;
+    mimeType: string;
+  }): Promise<{
+    ok: boolean;
+    transcript?: string;
+    error?: string;
+    code?: string;
+    latencyMs?: number;
+  }> => ipcRenderer.invoke("aurum:voice-transcribe", opts),
+
+  voiceSynthesize: (opts: {
+    text: string;
+    voice?: string;
+  }): Promise<{
+    ok: boolean;
+    audioBase64?: string;
+    mimeType?: string;
+    speechText?: string;
+    error?: string;
+    code?: string;
+    latencyMs?: number;
+  }> => ipcRenderer.invoke("aurum:voice-synthesize", opts),
+
+  voiceCancelPtt: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("aurum:voice-cancel-ptt"),
 };
 
 contextBridge.exposeInMainWorld("aurumDesktop", aurumDesktop);

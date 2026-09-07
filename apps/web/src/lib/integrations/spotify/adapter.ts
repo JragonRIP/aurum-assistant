@@ -828,4 +828,32 @@ export class SpotifyAdapter {
     if (!json.id) throw new SpotifyApiError("NOT_FOUND", "Spotify user not found.");
     return json.id;
   }
+
+  /**
+   * Upload a custom playlist cover image.
+   * Spotify requires JPEG base64 body, max ~256 KB (raw image bytes before base64).
+   */
+  async uploadPlaylistCover(
+    playlistId: string,
+    jpegBytes: Buffer,
+  ): Promise<void> {
+    if (jpegBytes.length > 256 * 1024) {
+      throw new SpotifyApiError(
+        "VALIDATION_ERROR",
+        "Cover image must be a JPEG under 256 KB.",
+      );
+    }
+    const res = await fetch(
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/images`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "image/jpeg",
+        },
+        body: jpegBytes.toString("base64"),
+      },
+    );
+    await assertOk(res);
+  }
 }

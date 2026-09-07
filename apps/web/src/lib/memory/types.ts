@@ -7,12 +7,13 @@ import {
   MemorySourceTypeSchema,
   MemoryStatusSchema,
   MemoryTypeSchema,
+  PERSONALITY_PREFERENCE_CANONICAL_KEYS,
   RESPONSE_DETAIL_CANONICAL_KEY,
   type MemoryImportance,
   type MemoryType,
 } from "@aurum/shared";
 
-export { RESPONSE_DETAIL_CANONICAL_KEY };
+export { RESPONSE_DETAIL_CANONICAL_KEY, PERSONALITY_PREFERENCE_CANONICAL_KEYS };
 
 export const MemoryItemSchema = z.object({
   id: z.string().uuid(),

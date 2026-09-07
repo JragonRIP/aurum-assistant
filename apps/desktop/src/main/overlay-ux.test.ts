@@ -75,4 +75,52 @@ describe("overlay open-in-aurum + hide animation contracts", () => {
     assert.match(overlay, /AurumPresence/);
     assert.doesNotMatch(overlay, /chain.of.thought|hidden reasoning/i);
   });
+
+  it("Esc after submit hides without aborting; PTT Esc still cancels recording", () => {
+    const overlay = fs.readFileSync(
+      path.join(root, "apps/desktop/src/overlay/OverlayApp.tsx"),
+      "utf8",
+    );
+    assert.match(overlay, /listeningRef\.current \|\| captureRef\.current\.isActive/);
+    assert.match(overlay, /voiceCancelPtt/);
+    assert.match(overlay, /hideOverlay\(\)/);
+    // Must not abort streaming on Esc anymore
+    assert.doesNotMatch(
+      overlay,
+      /if \(streaming\) \{\s*abortRef\.current/,
+    );
+  });
+
+  it("partial web failure uses warning not ERROR presence", () => {
+    const overlay = fs.readFileSync(
+      path.join(root, "apps/desktop/src/overlay/OverlayApp.tsx"),
+      "utf8",
+    );
+    assert.match(overlay, /setWarning/);
+    assert.match(overlay, /PROVIDER_UNAVAILABLE/);
+    assert.match(overlay, /isSoftOverlayToolFailure/);
+    assert.match(overlay, /normalizeOverlayText/);
+  });
+
+  it("transparent shell avoids filter blur that paints white strip", () => {
+    const css = fs.readFileSync(
+      path.join(root, "apps/desktop/src/overlay/overlay.css"),
+      "utf8",
+    );
+    const main = fs.readFileSync(
+      path.join(root, "apps/desktop/src/main/index.ts"),
+      "utf8",
+    );
+    assert.match(main, /hasShadow:\s*false/);
+    assert.doesNotMatch(css, /\.overlay-shell\s*\{[^}]*filter:\s*blur/s);
+  });
+
+  it("main owns turn snapshot for rehydrate", () => {
+    const main = fs.readFileSync(
+      path.join(root, "apps/desktop/src/main/index.ts"),
+      "utf8",
+    );
+    assert.match(main, /aurum:overlay-turn-state/);
+    assert.match(main, /getTurnSnapshot/);
+  });
 });

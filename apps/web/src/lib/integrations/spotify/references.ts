@@ -15,7 +15,14 @@ export function assertTrustedReferenceId(id: unknown): string | null {
   return trimmed;
 }
 
-export type IntegrationReferenceKind = "track" | "device" | "album" | "playlist";
+export type IntegrationReferenceKind =
+  | "track"
+  | "device"
+  | "album"
+  | "playlist"
+  | "web_page"
+  | "web_image"
+  | "web_file";
 
 export type IntegrationReferenceRow = {
   id: string;

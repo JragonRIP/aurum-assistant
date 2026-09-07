@@ -119,7 +119,7 @@ export function IntegrationsPanel() {
               : connected && spotify?.accountLabel
                 ? spotify.accountLabel
                 : needsUpgrade
-                  ? "Reconnect to grant playlist & library permissions"
+                  ? "Reconnect to grant playlist, library, and cover-upload permissions"
                   : spotify?.configured === false
                     ? "Not configured on server"
                     : "Not connected"}

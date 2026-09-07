@@ -14,6 +14,9 @@ import {
   approvalDetail,
   approvalPrimaryLabel,
 } from "./approval-copy";
+import { normalizeOverlayText } from "./overlay-text";
+import { VoiceCaptureSession } from "./voice-capture";
+import { VoicePlayback } from "./voice-playback";
 
 /** Compact reply threshold — keep in sync with main/overlay-layout.ts */
 function shouldOfferShowFull(reply: string): boolean {
@@ -21,6 +24,23 @@ function shouldOfferShowFull(reply: string): boolean {
   if (!text) return false;
   const lines = text.split(/\r?\n/).length;
   return text.length >= 420 || lines >= 10;
+}
+
+function isSoftOverlayToolFailure(code?: string, tool?: string): boolean {
+  if (
+    code === "APPROVAL_REQUIRED" ||
+    code === "AMBIGUOUS_TRACK" ||
+    code === "AMBIGUOUS_PLAYLIST" ||
+    code === "AMBIGUOUS_MATCH" ||
+    code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
+    code === "RATE_LIMITED" ||
+    code === "PROVIDER_UNAVAILABLE" ||
+    code === "UNSUPPORTED"
+  ) {
+    return true;
+  }
+  if (tool?.startsWith("web_")) return true;
+  return false;
 }
 
 type OverlayInfo = {
@@ -72,20 +92,30 @@ function mapPresence(opts: {
   awaitingUser: boolean;
   error: string | null;
   offline: boolean;
+  listening: boolean;
+  speaking: boolean;
+  transcribing: boolean;
+  researching?: boolean;
 }): { state: PresenceState; presentation: PresencePresentation } {
   if (opts.offline) return { state: "OFFLINE", presentation: "offline" };
-  // Waiting for the user outranks error — pending input is not failure
   if (opts.awaitingApproval) {
     return { state: "WAITING_FOR_APPROVAL", presentation: "hold" };
   }
   if (opts.awaitingUser) {
     return { state: "WAITING_FOR_USER", presentation: "awaiting" };
   }
-  if (opts.error && !opts.streaming) {
+  if (opts.listening) return { state: "LISTENING", presentation: "listening" };
+  if (opts.speaking) return { state: "SPEAKING", presentation: "speaking" };
+  // Hard errors only — warnings must not enter ERROR while a turn succeeded/degraded
+  if (opts.error && !opts.streaming && !opts.transcribing && !opts.acting) {
     return { state: "ERROR", presentation: "error" };
   }
-  if (opts.acting) return { state: "ACTING", presentation: "acting" };
-  if (opts.streaming) return { state: "THINKING", presentation: "thinking" };
+  if (opts.acting || opts.researching) {
+    return { state: "ACTING", presentation: "acting" };
+  }
+  if (opts.streaming || opts.transcribing) {
+    return { state: "THINKING", presentation: "thinking" };
+  }
   return { state: "IDLE", presentation: "idle" };
 }
 
@@ -98,6 +128,14 @@ export function OverlayApp() {
   const [status, setStatus] = useState("READY");
   const [reply, setReply] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [listening, setListening] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const voiceOriginRef = useRef(false);
+  const captureRef = useRef(new VoiceCaptureSession());
+  const playbackRef = useRef(new VoicePlayback());
+  const listeningRef = useRef(false);
   const [streaming, setStreaming] = useState(false);
   const [acting, setActing] = useState(false);
   const [successFlash, setSuccessFlash] = useState(false);
@@ -171,11 +209,47 @@ export function OverlayApp() {
           requestAnimationFrame(() => setShellVisible(true));
         });
       }
-      if (!awaitingApprovalRef.current) {
-        setError(null);
+      // Rehydrate from main-owned turn — never abort or wipe a live/completed turn.
+      void (async () => {
+        try {
+          const turn = await window.aurumDesktop.getOverlayTurnState?.();
+          if (turn) {
+            if (turn.reply) {
+              setReply(turn.reply);
+              replyRef.current = turn.reply;
+              setExpanded(true);
+            }
+            if (turn.warning) setWarning(turn.warning);
+            if (turn.error && turn.status === "FAILED") setError(turn.error);
+            if (turn.activity) setActivitySmooth(turn.activity);
+            if (turn.status === "RUNNING") {
+              setStreaming(true);
+              setStatus("WORKING");
+            } else if (turn.status === "WAITING_FOR_APPROVAL") {
+              setStatus("WAITING");
+              if (turn.pendingApproval) {
+                setApprovalQueue([turn.pendingApproval]);
+              }
+            } else if (turn.status === "WAITING_FOR_USER") {
+              setAwaitingUser(true);
+              setStatus("WAITING");
+            } else if (turn.status === "COMPLETED" && turn.reply) {
+              setStreaming(false);
+              setActing(false);
+              setStatus("READY");
+            } else if (turn.status === "FAILED" && turn.error) {
+              setStreaming(false);
+              setStatus("ERROR");
+            }
+          }
+        } catch {
+          /* ignore */
+        }
         if (!state.paired) setStatus("CONNECT");
-        else setStatus(state.online ? "READY" : "OFFLINE");
-      }
+        else if (!state.online && !streaming && !awaitingApprovalRef.current) {
+          setStatus("OFFLINE");
+        }
+      })();
       window.setTimeout(() => inputRef.current?.focus(), 40);
     });
     const unsubHide = window.aurumDesktop.onOverlayWillHide?.(() => {
@@ -199,27 +273,31 @@ export function OverlayApp() {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      // Esc never approves. With a pending approval: hide overlay only;
-      // the approval stays PENDING in the backend for the full app / later.
-      if (awaitingApprovalRef.current) {
-        void window.aurumDesktop.hideOverlay();
-        return;
-      }
-      if (streaming) {
-        abortRef.current?.();
-        setStreaming(false);
-        setActing(false);
-        setResearching(false);
+      // Esc during unsent PTT: cancel recording only
+      if (listeningRef.current || captureRef.current.isActive()) {
+        captureRef.current.cancel();
+        listeningRef.current = false;
+        setListening(false);
+        setTranscribing(false);
         setActivitySmooth(null);
-        inFlightTools.current.clear();
         setStatus("READY");
+        void window.aurumDesktop.voiceCancelPtt?.();
+        playbackRef.current.stop();
+        setSpeaking(false);
         return;
       }
+      // Esc while SPEAKING: stop local TTS, then hide — do not cancel agent work
+      if (speaking) {
+        playbackRef.current.stop();
+        setSpeaking(false);
+      }
+      // Esc after submit / while streaming / approval: hide only — execution continues.
+      // Esc never approves. Approval stays PENDING until explicit user action.
       void window.aurumDesktop.hideOverlay();
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [streaming]);
+  }, [speaking, setActivitySmooth]);
 
   const pushLayout = useCallback((mode: LayoutMode, contentHeightPx?: number) => {
     void window.aurumDesktop.setOverlayLayout?.({
@@ -252,8 +330,13 @@ export function OverlayApp() {
     awaitingUser,
     error,
     offline: paired && !online && !streaming && !awaitingApproval,
+    listening,
+    speaking,
+    transcribing,
+    researching,
   });
   const presentation = successFlash ? "success" : presence.presentation;
+  const displayReply = normalizeOverlayText(reply);
 
   async function handlePair() {
     const code = pairCode.trim();
@@ -286,6 +369,9 @@ export function OverlayApp() {
     setApprovalQueue((prev) => {
       if (prev.some((p) => p.approvalId === approvalId)) return prev;
       return [...prev, next];
+    });
+    void window.aurumDesktop.patchOverlayTurn?.({
+      pendingApproval: next,
     });
     setActing(false);
     setError(null);
@@ -413,14 +499,9 @@ export function OverlayApp() {
       setResearching(
         [...inFlightTools.current].some((t) => isResearchTool(t)),
       );
-      // APPROVAL_REQUIRED / soft playback / clarifications — never ERROR
+      // Soft tool failures (research unavailable, clarifications, etc.) — never ERROR
       if (
-        event.error?.code === "APPROVAL_REQUIRED" ||
-        event.error?.code === "AMBIGUOUS_TRACK" ||
-        event.error?.code === "AMBIGUOUS_PLAYLIST" ||
-        event.error?.code === "AMBIGUOUS_MATCH" ||
-        event.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
-        event.error?.code === "RATE_LIMITED" ||
+        isSoftOverlayToolFailure(event.error?.code, event.tool) ||
         awaitingApprovalRef.current ||
         awaitingUserRef.current
       ) {
@@ -446,6 +527,16 @@ export function OverlayApp() {
             setReply(event.error.message);
             setExpanded(true);
           }
+        } else if (
+          event.error?.code === "PROVIDER_UNAVAILABLE" ||
+          event.tool?.startsWith("web_")
+        ) {
+          setError(null);
+          setWarning(
+            event.error?.message ??
+              event.display?.detail ??
+              "Web search temporarily unavailable.",
+          );
         }
         return;
       }
@@ -487,7 +578,9 @@ export function OverlayApp() {
         !awaitingApprovalRef.current &&
         !awaitingUserRef.current
       ) {
-        setError(event.outcome.warning);
+        // Degraded success — warning, not ERROR presence
+        setWarning(event.outcome.warning);
+        setError(null);
       }
       if (awaitingApprovalRef.current) {
         setActing(false);
@@ -542,6 +635,11 @@ export function OverlayApp() {
       }
 
       setApprovalQueue((q) => q.slice(1));
+      if (remainingAfter === 0) {
+        void window.aurumDesktop.patchOverlayTurn?.({
+          pendingApproval: null,
+        });
+      }
 
       if (remainingAfter > 0) {
         setStatus("WAITING FOR APPROVAL");
@@ -584,16 +682,19 @@ export function OverlayApp() {
     }
   }
 
-  async function handleSubmit() {
-    const text = command.trim();
-    if (!text || streaming || awaitingApproval) return;
+  async function runChatTurn(text: string, opts?: { fromVoice?: boolean }) {
+    if (!text || streaming || awaitingApproval || listening || transcribing) return;
     if (!paired) {
       setStatus("CONNECT");
       return;
     }
+    voiceOriginRef.current = Boolean(opts?.fromVoice);
+    playbackRef.current.stop();
+    setSpeaking(false);
     setCommand("");
     setReply("");
     setError(null);
+    setWarning(null);
     setAwaitingUser(false);
     setStreaming(true);
     setActing(false);
@@ -623,6 +724,9 @@ export function OverlayApp() {
         setActivitySmooth(null);
         if (awaitingApprovalRef.current) {
           setStatus("WAITING FOR APPROVAL");
+          if (voiceOriginRef.current) {
+            void speakApprovalPrompt();
+          }
         } else if (awaitingUserRef.current) {
           setStatus("NEED YOUR INPUT");
           setError(null);
@@ -631,6 +735,9 @@ export function OverlayApp() {
           setStatus("ERROR");
         } else if (!error) {
           setStatus("READY");
+          if (voiceOriginRef.current && replyRef.current.trim()) {
+            void speakFinalReply(replyRef.current);
+          }
         }
         unsub?.();
         abortRef.current = null;
@@ -638,6 +745,144 @@ export function OverlayApp() {
       }
     });
   }
+
+  async function handleSubmit() {
+    const text = command.trim();
+    await runChatTurn(text, { fromVoice: false });
+  }
+
+  async function speakApprovalPrompt() {
+    try {
+      const res = await window.aurumDesktop.voiceSynthesize?.({
+        text: "I need your approval.",
+      });
+      if (!res?.ok || !res.audioBase64) return;
+      setSpeaking(true);
+      setStatus("SPEAKING");
+      await playbackRef.current.playBase64(res.audioBase64, res.mimeType || "audio/wav", {
+        onEnded: () => {
+          setSpeaking(false);
+          setStatus("WAITING FOR APPROVAL");
+        },
+      });
+    } catch {
+      // non-blocking
+    }
+  }
+
+  async function speakFinalReply(text: string) {
+    try {
+      const res = await window.aurumDesktop.voiceSynthesize?.({ text });
+      if (!res?.ok || !res.audioBase64) {
+        if (res?.error && res.code !== "tts_disabled" && !(res as { skipped?: boolean }).skipped) {
+          setActivitySmooth("Voice playback unavailable.");
+          window.setTimeout(() => setActivitySmooth(null), 2200);
+        }
+        return;
+      }
+      setSpeaking(true);
+      setStatus("SPEAKING");
+      setActivitySmooth(defaultPhaseActivity("speaking"));
+      await playbackRef.current.playBase64(res.audioBase64, res.mimeType || "audio/wav", {
+        onEnded: () => {
+          setSpeaking(false);
+          setActivitySmooth(null);
+          setStatus("READY");
+        },
+      });
+    } catch {
+      setActivitySmooth("Voice playback unavailable.");
+      window.setTimeout(() => setActivitySmooth(null), 2200);
+    }
+  }
+
+  useEffect(() => {
+    const unsubPtt = window.aurumDesktop.onVoicePtt?.(async (payload) => {
+      if (payload.phase === "cancel") {
+        captureRef.current.cancel();
+        listeningRef.current = false;
+        setListening(false);
+        setTranscribing(false);
+        setActivitySmooth(null);
+        setStatus("READY");
+        return;
+      }
+      if (payload.phase === "start") {
+        // Barge-in: stop speech when starting new PTT
+        playbackRef.current.stop();
+        setSpeaking(false);
+        if (streaming || awaitingApproval) return;
+        const started = await captureRef.current.start();
+        if (!started.ok) {
+          setError(
+            /permission|NotAllowed|denied/i.test(started.error ?? "")
+              ? "Microphone permission denied."
+              : started.error ?? "Microphone unavailable.",
+          );
+          setStatus("ERROR");
+          return;
+        }
+        listeningRef.current = true;
+        setListening(true);
+        setError(null);
+        setExpanded(true);
+        setStatus("LISTENING");
+        setActivitySmooth(defaultPhaseActivity("listening"));
+        return;
+      }
+      if (payload.phase === "stop") {
+        if (!listeningRef.current && !captureRef.current.isActive()) return;
+        listeningRef.current = false;
+        setListening(false);
+        setTranscribing(true);
+        setStatus("TRANSCRIBING");
+        setActivitySmooth(defaultPhaseActivity("transcribing"));
+        const stopped = await captureRef.current.stop();
+        if (!stopped.ok) {
+          setTranscribing(false);
+          setActivitySmooth(null);
+          setStatus("READY");
+          if (stopped.code !== "cancelled") {
+            setReply(stopped.message);
+            setExpanded(true);
+          }
+          return;
+        }
+        try {
+          const ab = await stopped.blob.arrayBuffer();
+          const bytes = new Uint8Array(ab);
+          const res = await window.aurumDesktop.voiceTranscribe?.({
+            bytes,
+            mimeType: stopped.mimeType,
+          });
+          setTranscribing(false);
+          setActivitySmooth(null);
+          if (!res?.ok || !res.transcript?.trim()) {
+            setReply(res?.error || "I didn't catch that.");
+            setExpanded(true);
+            setStatus("READY");
+            return;
+          }
+          setCommand(res.transcript);
+          await runChatTurn(res.transcript.trim(), { fromVoice: true });
+        } catch {
+          setTranscribing(false);
+          setActivitySmooth(null);
+          setReply("Transcription unavailable.");
+          setStatus("READY");
+        }
+      }
+    });
+    const unsubFocus = window.aurumDesktop.onOverlayFocusInput?.(() => {
+      window.setTimeout(() => inputRef.current?.focus(), 40);
+    });
+    return () => {
+      unsubPtt?.();
+      unsubFocus?.();
+    };
+    // Intentionally once — handlers use refs/state setters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!paired) {
     return (
@@ -683,6 +928,9 @@ export function OverlayApp() {
     awaitingApproval,
     awaitingUser,
     error: Boolean(error) && !streaming && !awaitingApproval && !awaitingUser,
+    listening,
+    speaking,
+    transcribing,
   });
 
   const workingHeadline =
@@ -694,11 +942,14 @@ export function OverlayApp() {
       : resolveWorkingHeadline({
           awaitingApproval,
           awaitingUser,
-          error: Boolean(error) && !streaming && !awaitingApproval && !awaitingUser,
+          error: Boolean(error) && !streaming && !awaitingApproval && !awaitingUser && !listening,
           researching,
           acting,
           streaming,
           hasReply: Boolean(reply),
+          listening,
+          transcribing,
+          speaking,
         });
 
   const showBody =
@@ -708,7 +959,8 @@ export function OverlayApp() {
     streaming ||
     pendingApproval ||
     sources.length > 0 ||
-    Boolean(activityLine);
+    Boolean(activityLine) ||
+    listening;
   const offerShowFull = shouldOfferShowFull(reply);
   const layoutClass = !expanded
     ? "layout-idle"
@@ -716,7 +968,13 @@ export function OverlayApp() {
       ? "layout-full"
       : "layout-compact";
   const inputSecondary =
-    streaming || acting || awaitingApproval || awaitingUser;
+    streaming ||
+    acting ||
+    awaitingApproval ||
+    awaitingUser ||
+    listening ||
+    transcribing ||
+    speaking;
 
   return (
     <div
@@ -734,11 +992,16 @@ export function OverlayApp() {
         </div>
         <div
           className={`overlay-status${
-            error && !streaming && !awaitingApproval && !awaitingUser
+            error && !streaming && !awaitingApproval && !awaitingUser && !listening
               ? " error"
               : ""
           }`}
         >
+          {listening ? (
+            <span className="overlay-mic-live" aria-label="Microphone active">
+              ●{" "}
+            </span>
+          ) : null}
           {workingHeadline}
         </div>
         {activityLine && !awaitingApproval && !reply ? (
@@ -752,9 +1015,13 @@ export function OverlayApp() {
           value={command}
           placeholder={showIdlePrompt ? "What do you need?" : ""}
           aria-label={showIdlePrompt ? "What do you need?" : "Ask Aurum"}
-          disabled={streaming || awaitingApproval}
+          disabled={streaming || awaitingApproval || listening || transcribing}
           onChange={(e) => setCommand(e.target.value)}
           onKeyDown={(e) => {
+            if (listening || transcribing) {
+              if (e.key === " " || e.code === "Space") e.preventDefault();
+              return;
+            }
             if (e.key === "Enter") void handleSubmit();
           }}
         />
@@ -801,8 +1068,11 @@ export function OverlayApp() {
                 </div>
               </div>
             ) : null}
-            {!pendingApproval && reply ? (
-              <div className="overlay-reply">{reply}</div>
+            {!pendingApproval && displayReply ? (
+              <div className="overlay-reply">{displayReply}</div>
+            ) : null}
+            {warning && !error ? (
+              <div className="overlay-reply overlay-warning">{warning}</div>
             ) : null}
             {error ? (
               <div className="overlay-reply" style={{ color: "var(--error)" }}>

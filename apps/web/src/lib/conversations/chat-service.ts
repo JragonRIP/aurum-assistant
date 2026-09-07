@@ -3,13 +3,16 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import {
   AIProviderError,
+  buildCapabilitySummary,
   buildConversationContext,
   buildSystemPrompt,
   classifyProviderError,
   deriveConversationTitle,
+  detectTemporaryToneOverride,
   isDefaultConversationTitle,
   isGeminiConfigured,
 } from "@aurum/ai";
+import { createDefaultRegistry } from "@aurum/tools";
 import { checkRateLimit } from "@/lib/ai/rate-limit";
 import { getConfiguredTextModel } from "@/lib/ai/gemini-client";
 import { runAgentWithTools } from "@/lib/agent/agent-runner";
@@ -17,19 +20,21 @@ import { buildStreamOutcome } from "@/lib/agent/generation-outcome";
 import { createSupabaseToolDataAccess } from "@/lib/tools/data-access";
 import { dispatchDeviceTool } from "@/lib/devices/dispatch";
 import {
+  getOnlineWindowsDevice,
   isDeviceHeartbeatFresh,
   listUserDevices,
 } from "@/lib/devices/queries";
-import { runSpotifyTool } from "@/lib/integrations/spotify/service";
+import { runSpotifyTool, getSpotifyConnectionPublic } from "@/lib/integrations/spotify/service";
 import { runWebAction } from "@/lib/integrations/web/research";
 import { runMemoryAction } from "@/lib/memory/actions";
 import {
+  applyMemoryCandidate,
   formatMemoriesForPrompt,
+  getPersonalityPreferenceMemories,
   getResponseDetailPreference,
   listRelevantMemories,
 } from "@/lib/memory/service";
 import { extractInferredMemoryCandidates } from "@/lib/memory/extract";
-import { applyMemoryCandidate } from "@/lib/memory/service";
 import {
   getConversationForUser,
   getMessageForUser,
@@ -345,13 +350,19 @@ export function createChatStream(options: {
         });
 
         const timezone = options.timezone ?? "America/Chicago";
-        let responseDetailPreference:
-          | "concise"
-          | "balanced"
-          | "detailed" = "concise";
+        let responseDetailPreference: "concise" | "balanced" | "detailed" =
+          "concise";
         let memoryBlock = "";
+        let personalityMemories: Array<{
+          canonical_key?: string | null;
+          content?: string | null;
+        }> = [];
         try {
           responseDetailPreference = await getResponseDetailPreference(
+            options.supabase,
+            options.userId,
+          );
+          personalityMemories = await getPersonalityPreferenceMemories(
             options.supabase,
             options.userId,
           );
@@ -368,12 +379,57 @@ export function createChatStream(options: {
           });
         }
 
+        const userContent = options.content ?? "";
+        const temporaryTone = detectTemporaryToneOverride(userContent);
+
+        let capabilitySummary = "";
+        try {
+          const registry = createDefaultRegistry();
+          const registeredToolIds = registry.list().map((t) => t.id);
+          const spotify = await getSpotifyConnectionPublic(
+            options.supabase,
+            options.userId,
+          ).catch(() => null);
+          const device = await getOnlineWindowsDevice(
+            options.supabase,
+            options.userId,
+          ).catch(() => null);
+          let approvedFolderCount = 0;
+          if (device) {
+            const { count } = await options.supabase
+              .from("device_approved_roots")
+              .select("id", { count: "exact", head: true })
+              .eq("user_id", options.userId)
+              .eq("device_id", device.id);
+            approvedFolderCount = count ?? 0;
+          }
+          capabilitySummary = buildCapabilitySummary({
+            registeredToolIds,
+            spotifyConnected: spotify?.status === "connected",
+            spotifyMissingScopes: spotify?.missingScopes ?? [],
+            windowsDeviceOnline: Boolean(device),
+            approvedFolderCount,
+            voiceAvailable:
+              options.deviceType === "WINDOWS" ||
+              options.deviceType === "DESKTOP",
+            memoryAvailable: true,
+          });
+        } catch (err) {
+          console.warn("[aurum:capabilities] summary skipped", {
+            message: err instanceof Error ? err.message.slice(0, 160) : "error",
+          });
+        }
+
         const instructions = [
           buildSystemPrompt({
             deviceType: options.deviceType ?? "WEB",
             timezone,
             now: new Date(),
             responseDetailPreference,
+            userMessage: userContent,
+            personalityMemories,
+            temporaryToneOverride: temporaryTone,
+            capabilitySummary,
           }),
           memoryBlock,
         ]
@@ -492,6 +548,23 @@ export function createChatStream(options: {
                 action,
                 input,
                 signal: toolCtx?.signal ?? options.signal,
+                supabase: options.supabase,
+                userId: options.userId,
+                conversationId: options.conversationId,
+                executionId:
+                  toolCtx?.currentExecutionId ??
+                  toolCtx?.requestId ??
+                  crypto.randomUUID(),
+                dispatchDeviceTool: async (tool, deviceInput, executionId) => {
+                  return dispatchDeviceTool({
+                    supabase: options.supabase,
+                    userId: options.userId,
+                    tool,
+                    input: deviceInput,
+                    executionId,
+                    signal: toolCtx?.signal ?? options.signal,
+                  });
+                },
               });
             },
             runMemoryAction: async (action, input) => {
@@ -761,12 +834,25 @@ export function createChatStream(options: {
         // (runs after persistence; failures are silent for inferred memories).
         void (async () => {
           try {
+            const toneOverride = detectTemporaryToneOverride(
+              options.content ?? "",
+            );
             const candidates = extractInferredMemoryCandidates(
               options.content ?? "",
               trimmed,
             );
             for (const c of candidates) {
               if (c.action === "IGNORE") continue;
+              // Temporary tone requests must not overwrite permanent personality prefs
+              if (
+                toneOverride?.temporary &&
+                c.canonicalKey &&
+                /preference:(personality_style|humor_level|sarcasm_level|formality)/.test(
+                  c.canonicalKey,
+                )
+              ) {
+                continue;
+              }
               await applyMemoryCandidate(options.supabase, options.userId, c, {
                 explicit: false,
                 sourceId: options.conversationId,

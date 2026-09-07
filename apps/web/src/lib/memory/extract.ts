@@ -33,9 +33,17 @@ export function extractExplicitMemoryCandidates(userMessage: string): MemoryCand
     return [];
   }
 
-  // Response detail preference
+  const temporaryTone =
+    /\b(for now|this (time|conversation|chat)|temporarily|just for)\b/i.test(
+      text,
+    );
+  const permanentTone =
+    /\b(from now on|always|going forward|by default|prefer)\b/i.test(text) &&
+    !temporaryTone;
+
+  // Response detail preference (permanent wording only)
   if (
-    /\b(from now on|prefer|keep|always)\b/i.test(text) &&
+    permanentTone &&
     /\b(concise|short|brief|detailed|in depth|balanced)\b/i.test(text) &&
     /\b(answers?|responses?|replies|detail)\b/i.test(text)
   ) {
@@ -49,6 +57,96 @@ export function extractExplicitMemoryCandidates(userMessage: string): MemoryCand
       content: `User prefers ${value} answers by default.`,
       confidence: 0.98,
     });
+  }
+
+  // Personality preferences — permanent only ("from now on" / "always").
+  // Temporary ("be serious for now") must not write preference memories.
+  if (permanentTone) {
+    if (/\b(more sarcastic|higher sarcasm|drier)\b/i.test(text)) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:sarcasm_level",
+        title: "Sarcasm level",
+        content: "User prefers more sarcasm (still restrained).",
+        confidence: 0.97,
+      });
+    } else if (
+      /\b(less sarcastic|tone down (the )?sarcasm|no sarcasm)\b/i.test(text)
+    ) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:sarcasm_level",
+        title: "Sarcasm level",
+        content: "User prefers subtle or no sarcasm.",
+        confidence: 0.97,
+      });
+    }
+
+    if (
+      /\b(tone down (the )?humor|less humor|no humor|be serious)\b/i.test(text)
+    ) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:humor_level",
+        title: "Humor level",
+        content: "User prefers none or minimal humor.",
+        confidence: 0.97,
+      });
+    } else if (/\b(more (humor|wit)|funnier|wittier)\b/i.test(text)) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:humor_level",
+        title: "Humor level",
+        content: "User prefers more dry wit (still understated).",
+        confidence: 0.97,
+      });
+    }
+
+    if (/\b(more casual|be casual|less formal)\b/i.test(text)) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:formality",
+        title: "Formality",
+        content: "User prefers a more casual tone.",
+        confidence: 0.97,
+      });
+    } else if (
+      /\b(more formal|more polished|more professional|be serious)\b/i.test(text)
+    ) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:formality",
+        title: "Formality",
+        content: /\bbe serious\b/i.test(text)
+          ? "User prefers a serious tone."
+          : "User prefers a polished formal tone.",
+        confidence: 0.97,
+      });
+    }
+
+    if (/\b(refined personality|personality.?style)\b/i.test(text)) {
+      out.push({
+        action: "UPDATE",
+        type: "PREFERENCE",
+        importance: "IMPORTANT",
+        canonicalKey: "preference:personality_style",
+        title: "Personality style",
+        content: "User prefers refined personality style.",
+        confidence: 0.96,
+      });
+    }
   }
 
   // Explicit remember
@@ -139,6 +237,11 @@ function guessCanonicalKey(content: string): string | undefined {
   const t = content.toLowerCase();
   if (/\bconcise|detailed|balanced\b/.test(t) && /\banswer|response\b/.test(t)) {
     return "preference:response_detail";
+  }
+  if (/\bsarcasm\b/.test(t)) return "preference:sarcasm_level";
+  if (/\bhumor\b/.test(t)) return "preference:humor_level";
+  if (/\bformality|casual|polished\b/.test(t) && /\bprefer|tone\b/.test(t)) {
+    return "preference:formality";
   }
   if (/\bclient/.test(t) && /\b\d+\b/.test(t)) return "goal:clients";
   return undefined;

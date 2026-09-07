@@ -1943,9 +1943,129 @@ export async function runSpotifyTool(opts: {
         });
         return {
           success: true,
-          data: { referenceId: ref.id, name: created.name },
-          message: `Created playlist ${created.name}.`,
+          data: { referenceId: ref.id, name: created.name, uri: created.uri },
+          message: `Created ${created.name}.`,
           activityLabel: `Creating playlist · ${created.name}`,
+        };
+      }
+
+      case "clear_queue": {
+        return {
+          success: false,
+          error: {
+            code: "UNSUPPORTED",
+            message:
+              "Spotify doesn't expose queue clearing through its API.",
+          },
+          activityLabel: "Queue clear unsupported",
+        };
+      }
+
+      case "set_playlist_cover": {
+        const { data: integ } = await opts.supabase
+          .from("integrations")
+          .select("scopes")
+          .eq("user_id", opts.userId)
+          .eq("provider", "spotify")
+          .maybeSingle();
+        const granted = Array.isArray(integ?.scopes)
+          ? (integ!.scopes as string[])
+          : [];
+        if (!granted.includes("ugc-image-upload")) {
+          return {
+            success: false,
+            error: {
+              code: "PERMISSION_DENIED",
+              message:
+                "Spotify needs a reconnect to grant playlist cover upload permission.",
+            },
+            data: {
+              needsScopeUpgrade: true,
+              missingScope: "ugc-image-upload",
+            },
+            activityLabel: "Reconnect Spotify",
+          };
+        }
+        const pref = await resolveIntegrationReference({
+          supabase: opts.supabase,
+          userId: opts.userId,
+          referenceId: opts.input.playlistReference,
+          provider: "spotify",
+          kind: "playlist",
+        });
+        if (!pref) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired playlist reference.",
+            },
+          };
+        }
+        let imageUrl: string | null = null;
+        for (const kind of ["web_image", "web_file"] as const) {
+          const iref = await resolveIntegrationReference({
+            supabase: opts.supabase,
+            userId: opts.userId,
+            referenceId: opts.input.imageReference,
+            provider: "web",
+            kind,
+          });
+          if (iref) {
+            imageUrl = iref.provider_uri;
+            break;
+          }
+        }
+        if (!imageUrl) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Invalid or expired image reference.",
+            },
+          };
+        }
+        const { downloadAndValidate } = await import(
+          "@/lib/integrations/web/download"
+        );
+        let jpeg: Buffer;
+        try {
+          const downloaded = await downloadAndValidate({ url: imageUrl });
+          if (downloaded.mime !== "image/jpeg") {
+            return {
+              success: false,
+              error: {
+                code: "UNSUPPORTED_FILE_TYPE",
+                message:
+                  "Spotify covers require a JPEG under 256 KB. Try another image.",
+              },
+            };
+          }
+          if (downloaded.body.length > 256 * 1024) {
+            return {
+              success: false,
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "Cover image must be a JPEG under 256 KB.",
+              },
+            };
+          }
+          jpeg = downloaded.body;
+        } catch {
+          return {
+            success: false,
+            error: {
+              code: "PROVIDER_UNAVAILABLE",
+              message: "Could not fetch that image for the cover.",
+            },
+          };
+        }
+        await adapter.uploadPlaylistCover(pref.provider_id, jpeg);
+        return {
+          success: true,
+          data: { playlist: pref.label },
+          message: `Updated the cover for ${pref.label}.`,
+          activityLabel: "Playlist cover updated",
         };
       }
 
@@ -2009,8 +2129,13 @@ export async function runSpotifyTool(opts: {
         const refs = Array.isArray(opts.input.trackReferences)
           ? opts.input.trackReferences
           : [];
+        const seen = new Set<string>();
         const uris: string[] = [];
+        let missing = 0;
         for (const id of refs) {
+          const key = String(id);
+          if (seen.has(key)) continue;
+          seen.add(key);
           const tref = await resolveIntegrationReference({
             supabase: opts.supabase,
             userId: opts.userId,
@@ -2019,6 +2144,7 @@ export async function runSpotifyTool(opts: {
             kind: "track",
           });
           if (tref) uris.push(tref.provider_uri);
+          else missing += 1;
         }
         if (uris.length === 0) {
           return {
@@ -2033,8 +2159,15 @@ export async function runSpotifyTool(opts: {
           await adapter.addPlaylistItems(pref.provider_id, uris);
           return {
             success: true,
-            data: { added: uris.length },
-            message: `Added ${uris.length} track(s) to ${pref.label}.`,
+            data: {
+              added: uris.length,
+              skippedInvalid: missing,
+              dedupedFrom: refs.length,
+            },
+            message:
+              missing > 0
+                ? `Added ${uris.length} track(s) to ${pref.label}. ${missing} reference(s) were invalid.`
+                : `Added ${uris.length} track(s) to ${pref.label}.`,
             activityLabel: `Adding ${uris.length} tracks`,
           };
         }

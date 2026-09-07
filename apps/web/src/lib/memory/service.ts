@@ -12,6 +12,7 @@ import {
   normalizeCanonicalKey,
   parseResponseDetailValue,
   rankMemoryScore,
+  PERSONALITY_PREFERENCE_CANONICAL_KEYS,
   RESPONSE_DETAIL_CANONICAL_KEY,
   type CreateMemoryInput,
   type MemoryCandidate,
@@ -344,15 +345,19 @@ export async function listRelevantMemories(
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(3, Math.min(8, limit)));
 
-  // Always include response_detail preference when present
-  const pref = items.find(
-    (m) => m.canonical_key === RESPONSE_DETAIL_CANONICAL_KEY,
-  );
-  if (pref && !ranked.some((r) => r.item.id === pref.id)) {
-    ranked.unshift({ item: pref, score: 100 });
+  // Always include response_detail + personality preference memories when present
+  const alwaysKeys = new Set<string>([
+    RESPONSE_DETAIL_CANONICAL_KEY,
+    ...PERSONALITY_PREFERENCE_CANONICAL_KEYS,
+  ]);
+  for (const key of alwaysKeys) {
+    const pref = items.find((m) => m.canonical_key === key);
+    if (pref && !ranked.some((r) => r.item.id === pref.id)) {
+      ranked.unshift({ item: pref, score: 100 });
+    }
   }
 
-  const selected = ranked.slice(0, limit).map((r) => r.item);
+  const selected = ranked.slice(0, Math.max(limit, alwaysKeys.size + 2)).map((r) => r.item);
   if (selected.length > 0) {
     const ids = selected.map((m) => m.id);
     void supabase
@@ -425,6 +430,18 @@ export async function applyMemoryCandidate(
     validUntil: candidate.validUntil ?? null,
   });
   return { ok: true, memory };
+}
+
+export async function getPersonalityPreferenceMemories(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<MemoryItem[]> {
+  const out: MemoryItem[] = [];
+  for (const key of PERSONALITY_PREFERENCE_CANONICAL_KEYS) {
+    const mem = await getMemoryByKey(supabase, userId, key).catch(() => null);
+    if (mem) out.push(mem);
+  }
+  return out;
 }
 
 export async function getResponseDetailPreference(

@@ -134,6 +134,8 @@ async function runTool(
       );
     case "create_text_file":
       return createTextFile(payload, roots);
+    case "save_downloaded_file":
+      return saveDownloadedFile(payload, roots);
     case "write_text_file":
       return writeTextFile(
         String(payload.path ?? ""),
@@ -712,6 +714,98 @@ async function createTextFile(
   return {
     success: true,
     data: { path: dest.canonical, activityLabel: "File created" },
+  };
+}
+
+function sniffDangerousExecutable(buf: Buffer): boolean {
+  // MZ PE
+  if (buf.length >= 2 && buf[0] === 0x4d && buf[1] === 0x5a) return true;
+  // Shebang
+  if (buf.length >= 2 && buf[0] === 0x23 && buf[1] === 0x21) return true;
+  return false;
+}
+
+async function saveDownloadedFile(
+  payload: Record<string, unknown>,
+  roots: ApprovedRoot[],
+): Promise<DeviceToolResult> {
+  const directory = String(payload.directory ?? "");
+  const name = sanitizeFileName(String(payload.fileName ?? ""));
+  const b64 = String(payload.contentBase64 ?? "");
+  const overwrite = payload.overwrite === true;
+  if (!name) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid file name." },
+    };
+  }
+  if (isBlockedExecutableExtension(name)) {
+    return {
+      success: false,
+      error: {
+        code: "EXECUTABLE_BLOCKED",
+        message: "Executable or script downloads are blocked.",
+      },
+    };
+  }
+  if (!b64 || b64.length > 2_200_000) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid download payload." },
+    };
+  }
+  let body: Buffer;
+  try {
+    body = Buffer.from(b64, "base64");
+  } catch {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid download payload." },
+    };
+  }
+  if (body.length === 0 || body.length > 1_600_000) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "File too large." },
+    };
+  }
+  if (sniffDangerousExecutable(body)) {
+    return {
+      success: false,
+      error: {
+        code: "EXECUTABLE_BLOCKED",
+        message: "Executable content is blocked.",
+      },
+    };
+  }
+
+  const parentCheck = assertApprovedPath(directory, rootsPaths(roots));
+  if (!parentCheck.ok) {
+    return {
+      success: false,
+      error: { code: parentCheck.code, message: parentCheck.message },
+    };
+  }
+  const full = path.join(parentCheck.canonical, name);
+  const dest = assertApprovedPath(full, rootsPaths(roots));
+  if (!dest.ok) {
+    return { success: false, error: { code: dest.code, message: dest.message } };
+  }
+  if (fsSync.existsSync(dest.canonical) && !overwrite) {
+    return {
+      success: false,
+      error: { code: "CONFLICT", message: "File already exists." },
+    };
+  }
+  await fs.writeFile(dest.canonical, body);
+  return {
+    success: true,
+    data: {
+      path: dest.canonical,
+      bytes: body.length,
+      message: `Saved ${name}.`,
+      activityLabel: "Downloaded file",
+    },
   };
 }
 

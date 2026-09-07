@@ -67,6 +67,9 @@ export {
   registerWebTools,
   createWebSearchTool,
   createWebReadPageTool,
+  createWebImageSearchTool,
+  createWebDownloadFileTool,
+  createListApprovedFoldersTool,
 } from "./web-tools";
 export {
   registerSpotifyTools,

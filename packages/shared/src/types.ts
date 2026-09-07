@@ -144,6 +144,19 @@ export type MemorySourceType = z.infer<typeof MemorySourceTypeSchema>;
 
 export const RESPONSE_DETAIL_CANONICAL_KEY = "preference:response_detail";
 
+/** Aurum personality preference memories (defaults apply when absent). */
+export const PERSONALITY_STYLE_CANONICAL_KEY = "preference:personality_style";
+export const HUMOR_LEVEL_CANONICAL_KEY = "preference:humor_level";
+export const SARCASM_LEVEL_CANONICAL_KEY = "preference:sarcasm_level";
+export const FORMALITY_CANONICAL_KEY = "preference:formality";
+
+export const PERSONALITY_PREFERENCE_CANONICAL_KEYS = [
+  PERSONALITY_STYLE_CANONICAL_KEY,
+  HUMOR_LEVEL_CANONICAL_KEY,
+  SARCASM_LEVEL_CANONICAL_KEY,
+  FORMALITY_CANONICAL_KEY,
+] as const;
+
 /** Lead pipeline statuses */
 export const LeadStatusSchema = z.enum([
   "NEW",

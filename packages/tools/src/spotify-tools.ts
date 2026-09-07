@@ -144,7 +144,9 @@ export type SpotifyAction =
   | "change_playlist_visibility"
   | "add_playlist_items"
   | "remove_playlist_items"
-  | "reorder_playlist_items";
+  | "reorder_playlist_items"
+  | "clear_queue"
+  | "set_playlist_cover";
 
 function spotifyTool<T extends z.ZodTypeAny>(
   def: Omit<AurumTool<T>, "handler" | "environment"> & {
@@ -574,7 +576,7 @@ export function createSpotifyCreatePlaylistTool() {
     id: "spotify_create_playlist",
     name: "Create Spotify playlist",
     description:
-      "Create a playlist. Defaults to private unless public=true. Returns a trusted playlistReference.",
+      "Create a playlist for the authenticated user (private by default). Returns trusted playlistReference. Confirm only after Spotify succeeds. For 'make a playlist with songs like X', create then search tracks then spotify_add_playlist_items in the same turn — do not wait for the user to say 'now add them'.",
     inputSchema: createPlaylistSchema,
     permission: "SAFE_WRITE",
     activityLabel: "Creating playlist",
@@ -623,7 +625,21 @@ export function createSpotifyAddPlaylistItemsTool() {
     id: "spotify_add_playlist_items",
     name: "Add tracks to Spotify playlist",
     description:
-      "Add trusted trackReferences to a playlist. Large batches may require confirmation.",
+      "Add trusted trackReferences to an owned playlist (playlistReference). Dedupes IDs. Resolve the playlist with spotify_resolve_playlist when the user names it. Never invent Spotify URIs. Report partial failures honestly.",
+    inputSchema: playlistTracksSchema,
+    permission: "SAFE_WRITE",
+    activityLabel: "Adding playlist tracks",
+    action: "add_playlist_items",
+  });
+}
+
+/** Alias preferred by natural language — same handler as add_playlist_items. */
+export function createSpotifyAddTracksToPlaylistTool() {
+  return spotifyTool({
+    id: "spotify_add_tracks_to_playlist",
+    name: "Add songs to Spotify playlist",
+    description:
+      "Alias of spotify_add_playlist_items. Add trusted trackReferences to a playlistReference.",
     inputSchema: playlistTracksSchema,
     permission: "SAFE_WRITE",
     activityLabel: "Adding playlist tracks",
@@ -635,11 +651,60 @@ export function createSpotifyRemovePlaylistItemsTool() {
   return spotifyTool({
     id: "spotify_remove_playlist_items",
     name: "Remove tracks from Spotify playlist",
-    description: "Remove trusted trackReferences from a playlist. Requires confirmation when many.",
+    description:
+      "Remove trusted trackReferences from a playlist. Requires confirmation. Resolve playlist by name first when needed.",
     inputSchema: playlistRemoveSchema,
     permission: "CONFIRM",
     activityLabel: "Removing playlist tracks",
     action: "remove_playlist_items",
+  });
+}
+
+/** Alias for remove. */
+export function createSpotifyRemoveTracksFromPlaylistTool() {
+  return spotifyTool({
+    id: "spotify_remove_tracks_from_playlist",
+    name: "Remove songs from Spotify playlist",
+    description:
+      "Alias of spotify_remove_playlist_items. Remove trusted trackReferences from a playlistReference.",
+    inputSchema: playlistRemoveSchema,
+    permission: "CONFIRM",
+    activityLabel: "Removing playlist tracks",
+    action: "remove_playlist_items",
+  });
+}
+
+export function createSpotifyClearQueueTool() {
+  return spotifyTool({
+    id: "spotify_clear_queue",
+    name: "Clear Spotify queue",
+    description:
+      "Attempt to clear the Spotify playback queue. Spotify's Web API does not expose a reliable queue-clear operation — this tool returns an honest unsupported result. Do not claim the queue was cleared.",
+    inputSchema: emptySchema,
+    permission: "SAFE_WRITE",
+    activityLabel: "Queue clear",
+    action: "clear_queue",
+  });
+}
+
+const playlistCoverSchema = z.object({
+  playlistReference: z.string().uuid(),
+  imageReference: z
+    .string()
+    .uuid()
+    .describe("Trusted web_image or web_file reference to use as cover"),
+});
+
+export function createSpotifySetPlaylistCoverTool() {
+  return spotifyTool({
+    id: "spotify_set_playlist_cover",
+    name: "Set Spotify playlist cover",
+    description:
+      "Set a custom cover image on an owned playlist using a trusted imageReference from web_image_search (JPEG under 256KB preferred). Requires ugc-image-upload scope. Do not invent image URLs.",
+    inputSchema: playlistCoverSchema,
+    permission: "SAFE_WRITE",
+    activityLabel: "Updating playlist cover",
+    action: "set_playlist_cover",
   });
 }
 
@@ -691,6 +756,10 @@ export function registerSpotifyTools(registry: ToolRegistry): void {
   registry.register(createSpotifyChangePlaylistDescriptionTool());
   registry.register(createSpotifyChangePlaylistVisibilityTool());
   registry.register(createSpotifyAddPlaylistItemsTool());
+  registry.register(createSpotifyAddTracksToPlaylistTool());
   registry.register(createSpotifyRemovePlaylistItemsTool());
+  registry.register(createSpotifyRemoveTracksFromPlaylistTool());
   registry.register(createSpotifyReorderPlaylistItemsTool());
+  registry.register(createSpotifyClearQueueTool());
+  registry.register(createSpotifySetPlaylistCoverTool());
 }

@@ -12,7 +12,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/working-activity.test.ts"
+    "test": "tsx --test src/working-activity.test.ts src/voice-working.test.ts"
   },
   "peerDependencies": {
     "react": "^19.0.0",

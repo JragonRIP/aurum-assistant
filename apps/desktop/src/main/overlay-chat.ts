@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import { getAurumWebUrl } from "./config";
 import type { DeviceCredential } from "./credentials";
 import { mapOverlayApprovalError } from "./overlay-approval-errors";
+import {
+  beginOverlayTurn,
+  emptyOverlayTurn,
+  reduceOverlayTurn,
+  type OverlayTurnSnapshot,
+} from "./overlay-execution";
 
 export type OverlayChatHandle = { id: string };
 
@@ -27,11 +33,13 @@ type ActiveChat = {
 
 /**
  * Main-process agent proxy for the overlay.
+ * Owns execution lifetime — hiding the overlay must not cancel.
  * Uses device Bearer auth — never exposes tokens to the renderer.
  */
 export class OverlayChatBridge {
   private active = new Map<string, ActiveChat>();
   private conversationId: string | null = null;
+  private turn: OverlayTurnSnapshot = emptyOverlayTurn();
 
   constructor(
     private getCred: () => DeviceCredential | null,
@@ -49,7 +57,55 @@ export class OverlayChatBridge {
     return this.conversationId;
   }
 
-  async start(text: string): Promise<OverlayChatHandle> {
+  getTurnSnapshot(): OverlayTurnSnapshot {
+    return { ...this.turn, pendingApproval: this.turn.pendingApproval };
+  }
+
+  isRunning(): boolean {
+    return (
+      this.turn.status === "RUNNING" ||
+      this.turn.status === "WAITING_FOR_APPROVAL" ||
+      this.turn.status === "WAITING_FOR_USER" ||
+      this.active.size > 0
+    );
+  }
+
+  setPendingApproval(
+    approval: OverlayTurnSnapshot["pendingApproval"],
+  ): void {
+    this.turn = {
+      ...this.turn,
+      pendingApproval: approval,
+      status: approval ? "WAITING_FOR_APPROVAL" : this.turn.status,
+      updatedAt: Date.now(),
+    };
+  }
+
+  patchTurn(partial: {
+    reply?: string;
+    warning?: string | null;
+    pendingApproval?: OverlayTurnSnapshot["pendingApproval"];
+  }): void {
+    this.turn = {
+      ...this.turn,
+      reply: partial.reply ?? this.turn.reply,
+      warning:
+        partial.warning !== undefined ? partial.warning : this.turn.warning,
+      pendingApproval:
+        partial.pendingApproval !== undefined
+          ? partial.pendingApproval
+          : this.turn.pendingApproval,
+      status: partial.pendingApproval
+        ? "WAITING_FOR_APPROVAL"
+        : this.turn.status,
+      updatedAt: Date.now(),
+    };
+  }
+
+  async start(
+    text: string,
+    opts?: { inputMode?: "text" | "voice" },
+  ): Promise<OverlayChatHandle> {
     const cred = this.getCred();
     if (!cred) throw new Error("Device not paired");
 
@@ -60,18 +116,54 @@ export class OverlayChatBridge {
       abort,
       conversationId: this.conversationId,
     });
+    this.turn = beginOverlayTurn(this.turn, {
+      executionId: id,
+      conversationId: this.conversationId,
+      inputMode: opts?.inputMode ?? "text",
+    });
 
     void this.run(id, text, cred, abort.signal);
     return { id };
   }
 
+  /** Explicit cancel only — never call from hide/Esc dismiss. */
   cancel(id: string): void {
     const chat = this.active.get(id);
     if (chat) {
       chat.abort.abort();
       this.active.delete(id);
+      this.turn = {
+        ...this.turn,
+        status: "CANCELLED",
+        activity: null,
+        updatedAt: Date.now(),
+      };
       this.onEvent({ id, done: true, error: "Cancelled" });
     }
+  }
+
+  private noteStreamEvent(id: string, event: unknown): void {
+    if (!event || typeof event !== "object") return;
+    const e = event as {
+      type?: string;
+      text?: string;
+      tool?: string;
+      approvalId?: string;
+      executionId?: string;
+      display?: { label?: string; detail?: string };
+      error?: { message?: string; code?: string };
+      message?: { content?: string };
+      outcome?: { warning?: string };
+    };
+    if (!e.type) return;
+    if (this.turn.executionId && this.turn.executionId !== id) {
+      // Stale event from a previous turn — ignore for snapshot ownership
+      if (this.active.has(this.turn.executionId)) return;
+    }
+    this.turn = reduceOverlayTurn(
+      { ...this.turn, executionId: id, conversationId: this.conversationId },
+      e as Parameters<typeof reduceOverlayTurn>[1],
+    );
   }
 
   /**
@@ -183,6 +275,11 @@ export class OverlayChatBridge {
     if (!res.ok) throw new Error("Could not create overlay session");
     const data = (await res.json()) as { conversation: { id: string } };
     this.conversationId = data.conversation.id;
+    this.turn = {
+      ...this.turn,
+      conversationId: this.conversationId,
+      updatedAt: Date.now(),
+    };
     return this.conversationId;
   }
 
@@ -215,10 +312,18 @@ export class OverlayChatBridge {
         const body = (await res.json().catch(() => ({}))) as {
           error?: string;
         };
+        const message = body.error ?? `Chat failed (${res.status})`;
+        this.turn = {
+          ...this.turn,
+          status: "FAILED",
+          error: message,
+          activity: null,
+          updatedAt: Date.now(),
+        };
         this.onEvent({
           id,
           done: true,
-          error: body.error ?? `Chat failed (${res.status})`,
+          error: message,
         });
         return;
       }
@@ -239,6 +344,7 @@ export class OverlayChatBridge {
           if (!json) continue;
           try {
             const event = JSON.parse(json) as { type?: string };
+            this.noteStreamEvent(id, event);
             this.onEvent({ id, event });
             if (event.type === "done" || event.type === "error") {
               this.onEvent({ id, done: true });
@@ -255,10 +361,18 @@ export class OverlayChatBridge {
       if (signal.aborted) {
         this.onEvent({ id, done: true });
       } else {
+        const message = err instanceof Error ? err.message : "Chat failed";
+        this.turn = {
+          ...this.turn,
+          status: "FAILED",
+          error: message,
+          activity: null,
+          updatedAt: Date.now(),
+        };
         this.onEvent({
           id,
           done: true,
-          error: err instanceof Error ? err.message : "Chat failed",
+          error: message,
         });
       }
     } finally {

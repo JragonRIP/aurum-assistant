@@ -20,7 +20,9 @@ export function isSoftToolErrorCode(code: string | undefined): boolean {
   return (
     isClarificationErrorCode(code) ||
     code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
-    code === "RATE_LIMITED"
+    code === "RATE_LIMITED" ||
+    code === "PROVIDER_UNAVAILABLE" ||
+    code === "UNSUPPORTED"
   );
 }
 
