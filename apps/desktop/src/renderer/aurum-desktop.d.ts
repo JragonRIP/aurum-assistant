@@ -41,7 +41,10 @@ declare global {
       submitOverlayCommand: (
         text: string,
       ) => Promise<{ ok: boolean; error?: string }>;
-      startOverlayChat?: (text: string) => Promise<{ id: string }>;
+      startOverlayChat?: (
+        text: string,
+        opts?: { origin?: "text" | "voice" },
+      ) => Promise<{ id: string }>;
       cancelOverlayChat?: (id: string) => Promise<{ ok: boolean }>;
       decideOverlayApproval?: (
         approvalId: string,

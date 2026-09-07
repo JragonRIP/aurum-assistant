@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { isGeminiConfigured } from "@aurum/ai";
+import { buildSpeechResponse, isGeminiConfigured } from "@aurum/ai";
+import { shouldSpeakResponse } from "@aurum/shared";
 import { isDeviceAuthError, requireDeviceAuth } from "@/lib/devices/auth";
 import { checkRateLimit } from "@/lib/ai/rate-limit";
 import { synthesizeSpeech } from "@/lib/voice/tts";
@@ -41,31 +42,59 @@ export async function POST(request: Request) {
   }
 
   const settings = await getVoiceSettings(auth.supabase, auth.device.user_id);
-  if (settings.spokenMode === "never") {
+  if (!settings.enabled || settings.spokenMode === "never") {
     return NextResponse.json(
-      { error: "Spoken responses disabled.", code: "tts_disabled", skipped: true },
+      {
+        error: "Spoken responses disabled.",
+        code: "tts_disabled",
+        skipped: true,
+      },
       { status: 200 },
     );
   }
+
+  // Gate on the spoken candidate (buildSpeechResponse), not raw/tool payloads.
+  const speechCandidate = buildSpeechResponse(text);
+  if (
+    !shouldSpeakResponse({
+      inputMode: "voice",
+      spokenMode: settings.spokenMode,
+      speechText: speechCandidate,
+    })
+  ) {
+    console.info("[aurum:voice:tts:device]", {
+      stage: "skip",
+      code:
+        settings.spokenMode === "short_only"
+          ? "short_only_skip"
+          : "tts_skipped",
+      spokenMode: settings.spokenMode,
+      speechTextLen: speechCandidate.length,
+      deviceIdPrefix: auth.device.id.slice(0, 8),
+    });
+    return NextResponse.json({
+      skipped: true,
+      speechText: speechCandidate,
+      code:
+        settings.spokenMode === "short_only"
+          ? "short_only_skip"
+          : "tts_skipped",
+    });
+  }
+
   const voice = body?.voice?.trim() || settings.ttsVoice;
 
   try {
     const result = await synthesizeSpeech({ text, voice });
-    if (
-      settings.spokenMode === "short_only" &&
-      result.speechText.length > 280
-    ) {
-      return NextResponse.json({
-        skipped: true,
-        speechText: result.speechText,
-        code: "short_only_skip",
-      });
-    }
     console.info("[aurum:voice:tts:device]", {
+      stage: "ok",
       deviceIdPrefix: auth.device.id.slice(0, 8),
       latencyMs: result.latencyMs,
       model: result.model,
       voice: result.voice,
+      mimeType: result.mimeType?.split(";")[0] ?? null,
+      audioBytesApprox: Math.floor((result.audioBase64?.length ?? 0) * 0.75),
+      speechTextLen: result.speechText.length,
     });
     return NextResponse.json({
       audioBase64: result.audioBase64,
@@ -78,7 +107,10 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "TTS failed";
-    console.warn("[aurum:voice:tts:device]", { error: message.slice(0, 160) });
+    console.warn("[aurum:voice:tts:device]", {
+      code: "tts_failed",
+      error: message.slice(0, 160),
+    });
     return NextResponse.json(
       { error: "Voice playback unavailable.", code: "tts_failed" },
       { status: 502 },

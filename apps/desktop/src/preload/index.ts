@@ -58,8 +58,14 @@ const aurumDesktop = {
   ): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("aurum:overlay-command", { text }),
 
-  startOverlayChat: (text: string): Promise<{ id: string }> =>
-    ipcRenderer.invoke("aurum:overlay-chat-start", { text }),
+  startOverlayChat: (
+    text: string,
+    opts?: { origin?: "text" | "voice" },
+  ): Promise<{ id: string }> =>
+    ipcRenderer.invoke("aurum:overlay-chat-start", {
+      text,
+      origin: opts?.origin,
+    }),
 
   cancelOverlayChat: (id: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:overlay-chat-cancel", { id }),

@@ -14,6 +14,12 @@ import {
 import path from "node:path";
 import fs from "node:fs";
 import { z } from "zod";
+
+// Trusted local overlay TTS after async PTT — do not require a click each turn.
+app.commandLine.appendSwitch(
+  "autoplay-policy",
+  "no-user-gesture-required",
+);
 import { DeviceBridge } from "./bridge";
 import { getAurumWebUrl, loadDesktopEnv } from "./config";
 import {
@@ -267,6 +273,8 @@ function createOverlayWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Overlay is a trusted local file:// surface; allow post-PTT TTS without a click.
+      autoplayPolicy: "no-user-gesture-required",
     },
   });
 
@@ -653,10 +661,15 @@ function registerIpc(): void {
 
   ipcMain.handle("aurum:overlay-chat-start", async (_event, raw: unknown) => {
     const parsed = z
-      .object({ text: z.string().min(1).max(4000) })
+      .object({
+        text: z.string().min(1).max(4000),
+        origin: z.enum(["text", "voice"]).optional(),
+      })
       .safeParse(raw);
     if (!parsed.success) throw new Error("Invalid command");
-    return ensureOverlayChat().start(parsed.data.text);
+    return ensureOverlayChat().start(parsed.data.text, {
+      inputMode: parsed.data.origin === "voice" ? "voice" : "text",
+    });
   });
 
   ipcMain.handle("aurum:voice-transcribe", async (_event, raw: unknown) => {

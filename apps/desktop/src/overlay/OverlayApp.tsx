@@ -177,6 +177,15 @@ export function OverlayApp() {
     setActivityLine(next);
   }, []);
 
+  /** Keep replyRef in sync immediately — useEffect alone races TTS on done. */
+  const writeReply = useCallback((update: string | ((prev: string) => string)) => {
+    setReply((prev) => {
+      const next = typeof update === "function" ? update(prev) : update;
+      replyRef.current = next;
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     awaitingApprovalRef.current = awaitingApproval;
   }, [awaitingApproval]);
@@ -538,7 +547,7 @@ export function OverlayApp() {
           setError(null);
           setActivitySmooth(null);
           if (event.error?.message) {
-            setReply(event.error.message);
+            writeReply(event.error.message);
             setExpanded(true);
           }
         } else if (
@@ -548,7 +557,7 @@ export function OverlayApp() {
           setError(null);
           setActivitySmooth(null);
           if (event.error?.message) {
-            setReply(event.error.message);
+            writeReply(event.error.message);
             setExpanded(true);
           }
         } else if (
@@ -582,20 +591,25 @@ export function OverlayApp() {
         event.display?.detail ??
         event.error?.message ??
         "Which one did you mean?";
-      setReply(detail);
+      writeReply(detail);
       setExpanded(true);
       return;
     }
     if (event.type === "delta" && event.text) {
       setActivitySmooth(null);
-      setReply((prev) => prev + event.text!);
+      writeReply((prev) => prev + event.text!);
       setExpanded(true);
       return;
     }
     if (event.type === "done") {
       setActivitySmooth(null);
-      if (event.message?.content && !replyRef.current) {
-        setReply(event.message.content);
+      if (event.message?.content) {
+        // Prefer final message content when present; always sync replyRef now.
+        if (!replyRef.current.trim()) {
+          writeReply(event.message.content);
+        } else if (event.message.content.length > replyRef.current.length) {
+          writeReply(event.message.content);
+        }
       }
       if (
         event.outcome?.warning &&
@@ -726,7 +740,7 @@ export function OverlayApp() {
     playbackRef.current.stop();
     setSpeaking(false);
     setCommand("");
-    setReply("");
+    writeReply("");
     setError(null);
     setWarning(null);
     setAwaitingUser(false);
@@ -743,11 +757,14 @@ export function OverlayApp() {
     setResearching(false);
     inFlightTools.current.clear();
 
-    const handle = await window.aurumDesktop.startOverlayChat(text);
+    const handle = await window.aurumDesktop.startOverlayChat(text, {
+      origin: opts.origin,
+    });
     abortRef.current = () => {
       void window.aurumDesktop.cancelOverlayChat?.(handle.id);
     };
 
+    let spokeForTurn = false;
     const unsub = window.aurumDesktop.onOverlayChatEvent?.((payload) => {
       if (payload.id !== handle.id) return;
       if (payload.event) applyEvent(payload.event as StreamEvent);
@@ -769,10 +786,20 @@ export function OverlayApp() {
         } else if (payload.error) {
           setError(payload.error);
           setStatus("ERROR");
-        } else if (!error) {
+        } else {
+          // Do not gate on closed-over React `error` state — it races and can
+          // skip TTS after any prior error even when this turn succeeded.
           setStatus("READY");
-          if (voiceOriginRef.current && replyRef.current.trim()) {
-            void speakFinalReply(replyRef.current);
+          const speech = replyRef.current.trim();
+          console.info("[aurum:voice:tts]", {
+            stage: "turn_complete",
+            origin: voiceOriginRef.current ? "voice" : "text",
+            finalResponseLen: speech.length,
+            willAttemptTts: Boolean(voiceOriginRef.current && speech && !spokeForTurn),
+          });
+          if (voiceOriginRef.current && speech && !spokeForTurn) {
+            spokeForTurn = true;
+            void speakFinalReply(speech);
           }
         }
         unsub?.();
@@ -812,11 +839,37 @@ export function OverlayApp() {
   }
 
   async function speakFinalReply(text: string) {
+    const origin = voiceOriginRef.current ? "voice" : "text";
+    console.info("[aurum:voice:tts]", {
+      stage: "eligibility",
+      origin,
+      finalResponseLen: text.trim().length,
+      // Server enforces spoken_mode; client always attempts for voice-origin.
+      clientEligible: origin === "voice" && text.trim().length > 0,
+    });
+    if (origin !== "voice" || !text.trim()) return;
+
     try {
+      console.info("[aurum:voice:tts]", { stage: "synthesize_start" });
       const res = await window.aurumDesktop.voiceSynthesize?.({ text });
+      console.info("[aurum:voice:tts]", {
+        stage: "synthesize_result",
+        ok: Boolean(res?.ok),
+        skipped: Boolean((res as { skipped?: boolean } | undefined)?.skipped),
+        code: res?.code ?? null,
+        speechTextLen: (res?.speechText ?? "").length,
+        mimeType: (res?.mimeType ?? "").split(";")[0] || null,
+        audioBytesApprox: res?.audioBase64
+          ? Math.floor(res.audioBase64.length * 0.75)
+          : 0,
+      });
       if (!res?.ok || !res.audioBase64) {
         // skipped / tts_disabled / short_only: keep the visible text answer
-        if (res?.error && res.code !== "tts_disabled" && !(res as { skipped?: boolean }).skipped) {
+        if (
+          res?.error &&
+          res.code !== "tts_disabled" &&
+          !(res as { skipped?: boolean }).skipped
+        ) {
           setActivitySmooth("Voice playback unavailable.");
           window.setTimeout(() => setActivitySmooth(null), 2200);
         }
@@ -825,14 +878,52 @@ export function OverlayApp() {
       setSpeaking(true);
       setStatus("SPEAKING");
       setActivitySmooth(defaultPhaseActivity("speaking"));
-      await playbackRef.current.playBase64(res.audioBase64, res.mimeType || "audio/wav", {
-        onEnded: () => {
-          setSpeaking(false);
-          setActivitySmooth(null);
-          setStatus("READY");
-        },
+      console.info("[aurum:voice:tts]", {
+        stage: "playback_start",
+        speaking: true,
       });
-    } catch {
+      const played = await playbackRef.current.playBase64(
+        res.audioBase64,
+        res.mimeType || "audio/wav",
+        {
+          onEnded: () => {
+            console.info("[aurum:voice:tts]", {
+              stage: "playback_ended",
+              speaking: false,
+            });
+            setSpeaking(false);
+            setActivitySmooth(null);
+            setStatus("READY");
+          },
+          onError: (message) => {
+            console.warn("[aurum:voice:tts]", {
+              stage: "playback_error",
+              error: message.slice(0, 120),
+            });
+            setSpeaking(false);
+            setStatus("READY");
+            setActivitySmooth("Voice playback unavailable.");
+            window.setTimeout(() => setActivitySmooth(null), 2200);
+          },
+        },
+      );
+      if (!played.ok) {
+        console.warn("[aurum:voice:tts]", {
+          stage: "playback_rejected",
+          error: (played.error ?? "unknown").slice(0, 120),
+        });
+        setSpeaking(false);
+        setStatus("READY");
+        setActivitySmooth("Voice playback unavailable.");
+        window.setTimeout(() => setActivitySmooth(null), 2200);
+      }
+    } catch (err) {
+      console.warn("[aurum:voice:tts]", {
+        stage: "synthesize_exception",
+        error:
+          err instanceof Error ? err.message.slice(0, 120) : "unknown",
+      });
+      setSpeaking(false);
       setActivitySmooth("Voice playback unavailable.");
       window.setTimeout(() => setActivitySmooth(null), 2200);
     }
@@ -888,7 +979,7 @@ export function OverlayApp() {
           setActivitySmooth(null);
           setStatus("READY");
           if (stopped.code !== "cancelled") {
-            setReply(stopped.message);
+            writeReply(stopped.message);
             setExpanded(true);
           }
           return;
@@ -914,7 +1005,7 @@ export function OverlayApp() {
           setActivitySmooth(null);
           const transcript = res?.transcript?.trim() ?? "";
           if (!res?.ok || !shouldAutoSubmitVoiceTranscript(transcript)) {
-            setReply(res?.error || "I didn't catch that.");
+            writeReply(res?.error || "I didn't catch that.");
             setExpanded(true);
             setStatus("READY");
             return;
@@ -929,7 +1020,7 @@ export function OverlayApp() {
           transcribingRef.current = false;
           setTranscribing(false);
           setActivitySmooth(null);
-          setReply("Transcription unavailable.");
+          writeReply("Transcription unavailable.");
           setStatus("READY");
         }
       }

@@ -75,7 +75,7 @@ describe("voice auto-submit contracts", () => {
   it("voice origin survives to final TTS trigger", () => {
     const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
     assert.match(src, /voiceOriginRef\.current\s*=\s*opts\.origin\s*===\s*["']voice["']/);
-    assert.match(src, /voiceOriginRef\.current && replyRef\.current\.trim\(\)/);
+    assert.match(src, /voiceOriginRef\.current && speech && !spokeForTurn/);
     assert.match(src, /speakFinalReply/);
   });
 

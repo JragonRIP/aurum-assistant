@@ -1,28 +1,38 @@
 /**
  * Single-slot TTS playback for the overlay.
  * New play() stops previous. Esc / new PTT should call stop().
+ * Keeps HTMLAudioElement alive on `this` until ended / stop / barge-in.
  */
 export class VoicePlayback {
   private audio: HTMLAudioElement | null = null;
   private objectUrl: string | null = null;
   private playing = false;
+  private generation = 0;
 
   isPlaying(): boolean {
     return this.playing;
   }
 
   stop(): void {
+    this.generation += 1;
     if (this.audio) {
       try {
+        this.audio.onended = null;
+        this.audio.onerror = null;
         this.audio.pause();
-        this.audio.src = "";
+        this.audio.removeAttribute("src");
+        this.audio.load();
       } catch {
         // ignore
       }
       this.audio = null;
     }
     if (this.objectUrl) {
-      URL.revokeObjectURL(this.objectUrl);
+      try {
+        URL.revokeObjectURL(this.objectUrl);
+      } catch {
+        // ignore
+      }
       this.objectUrl = null;
     }
     this.playing = false;
@@ -31,14 +41,21 @@ export class VoicePlayback {
   async playBase64(
     audioBase64: string,
     mimeType: string,
-    opts?: { sinkId?: string | null; onEnded?: () => void },
-  ): Promise<{ ok: boolean; error?: string }> {
+    opts?: {
+      sinkId?: string | null;
+      onEnded?: () => void;
+      onError?: (message: string) => void;
+    },
+  ): Promise<{ ok: boolean; error?: string; audioBytes?: number }> {
     this.stop();
+    const gen = this.generation;
     try {
       const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
       const blob = pcmOrBlob(bytes, mimeType);
       this.objectUrl = URL.createObjectURL(blob);
-      const audio = new Audio(this.objectUrl);
+      const audio = new Audio();
+      audio.preload = "auto";
+      audio.src = this.objectUrl;
       this.audio = audio;
       if (opts?.sinkId && "setSinkId" in audio) {
         try {
@@ -50,17 +67,36 @@ export class VoicePlayback {
       }
       this.playing = true;
       audio.onended = () => {
+        if (gen !== this.generation) return;
         this.playing = false;
         this.stop();
         opts?.onEnded?.();
       };
       audio.onerror = () => {
+        if (gen !== this.generation) return;
+        this.playing = false;
+        const msg = "Audio element error";
+        this.stop();
+        opts?.onError?.(msg);
+      };
+      try {
+        await audio.play();
+      } catch (err) {
+        if (gen !== this.generation) {
+          return { ok: false, error: "Playback superseded" };
+        }
         this.playing = false;
         this.stop();
-        opts?.onEnded?.();
-      };
-      await audio.play();
-      return { ok: true };
+        const message =
+          err instanceof Error
+            ? err.name === "NotAllowedError"
+              ? "Autoplay blocked"
+              : err.message
+            : "Playback failed";
+        opts?.onError?.(message);
+        return { ok: false, error: message, audioBytes: bytes.byteLength };
+      }
+      return { ok: true, audioBytes: bytes.byteLength };
     } catch (err) {
       this.stop();
       return {
@@ -71,7 +107,7 @@ export class VoicePlayback {
   }
 }
 
-function pcmOrBlob(bytes: Uint8Array, mimeType: string): Blob {
+export function pcmOrBlob(bytes: Uint8Array, mimeType: string): Blob {
   const mime = mimeType.toLowerCase();
   if (mime.includes("l16") || mime.includes("pcm")) {
     const rateMatch = /rate=(\d+)/i.exec(mimeType);

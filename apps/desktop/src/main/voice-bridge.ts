@@ -158,8 +158,25 @@ export class VoiceBridge {
         };
       }
       if (data.skipped) {
+        console.info("[aurum:voice:bridge:tts]", {
+          skipped: true,
+          code: data.code ?? null,
+          speechTextLen: (data.speechText ?? "").length,
+          latencyMs: Date.now() - started,
+        });
         return { ok: true, skipped: true, speechText: data.speechText };
       }
+      const audioBytesApprox = Math.floor(
+        (data.audioBase64?.length ?? 0) * 0.75,
+      );
+      console.info("[aurum:voice:bridge:tts]", {
+        httpStatus: res.status,
+        latencyMs: data.latencyMs ?? Date.now() - started,
+        mimeType: (data.mimeType ?? "").split(";")[0] || null,
+        audioBytesApprox,
+        speechTextLen: (data.speechText ?? "").length,
+        skipped: false,
+      });
       return {
         ok: true,
         audioBase64: data.audioBase64,

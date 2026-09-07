@@ -174,7 +174,7 @@ export function shouldSpeakResponse(opts: {
   if (opts.inputMode !== "voice") return false;
   if (opts.spokenMode === "never") return false;
   if (opts.spokenMode === "always_voice") return opts.speechText.trim().length > 0;
-  // short_only: speak if under ~280 chars / ~2 sentences heuristic
+  // short_only: speak if under ~280 chars and <= 3 sentence-like segments
   const t = opts.speechText.trim();
   if (!t) return false;
   return t.length <= 280 && t.split(/[.!?]+/).filter(Boolean).length <= 3;
