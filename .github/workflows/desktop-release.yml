@@ -58,6 +58,14 @@ jobs:
       - name: Build desktop
         run: npm run build --workspace=@aurum/desktop
 
+      - name: Install voice engine Python deps
+        working-directory: apps/voice-engine
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -U pip wheel setuptools
+          .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
       - name: Prepare packaged voice engine
         env:
           PYTHONUNBUFFERED: "1"

@@ -34,8 +34,30 @@ const skipWarm = process.argv.includes("--skip-model-warm");
 const PYTHON_EMBED_VERSION = "3.12.10";
 const PYTHON_EMBED_URL = `https://www.python.org/ftp/python/${PYTHON_EMBED_VERSION}/python-${PYTHON_EMBED_VERSION}-embed-amd64.zip`;
 
+function step(msg) {
+  console.log(`[voice-pack] ${msg}`);
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(`::notice::${msg}`);
+  }
+}
+
 function fail(msg) {
-  console.error(`[voice-pack] ${msg}`);
+  const text = `[voice-pack] ${msg}`;
+  console.error(text);
+  if (process.env.GITHUB_ACTIONS) {
+    const oneLine = String(msg).replace(/\r?\n/g, " · ").slice(0, 3500);
+    console.error(`::error::${oneLine}`);
+    try {
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        fs.appendFileSync(
+          process.env.GITHUB_STEP_SUMMARY,
+          `\n### Voice engine pack failed\n\n\`\`\`\n${String(msg).slice(0, 8000)}\n\`\`\`\n`,
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   process.exit(1);
 }
 
@@ -333,6 +355,7 @@ async function main() {
   }
 
   console.log("[voice-pack] Preparing packaged voice engine…");
+  step("ensure venv");
   const venvPy = ensureVenv();
   const outRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aurum-voice-engine-"));
 
@@ -346,12 +369,15 @@ async function main() {
   );
   writeNotices(outRoot);
 
+  step("install embeddable CPython + site-packages");
   const bundledPy = await installEmbeddableRuntime(outRoot);
+  step("verify bundled imports");
   verifyBundledPython(bundledPy, outRoot);
 
+  step("seed Kokoro model assets");
   seedModels(venvPy, outRoot);
 
-  console.log("[voice-pack] Offline bundled synth smoke…");
+  step("offline bundled synth smoke");
   const models = path.join(outRoot, "models");
   const hub = path.join(models, "hub");
   const smoke = spawnPython(
