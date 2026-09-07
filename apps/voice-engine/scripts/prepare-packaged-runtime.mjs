@@ -15,12 +15,9 @@
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createWriteStream } from "node:fs";
-import { pipeline } from "node:stream/promises";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const engineRoot = path.resolve(__dirname, "..");
@@ -51,10 +48,14 @@ function pythonInVenv() {
 }
 
 function spawnPython(py, args, extra = {}) {
+  const inherit = extra.inherit === true;
+  const opts = { ...extra };
+  delete opts.inherit;
   return spawnSync(py, args, {
-    encoding: "utf8",
-    maxBuffer: 20 * 1024 * 1024,
-    ...extra,
+    encoding: inherit ? undefined : "utf8",
+    stdio: inherit ? "inherit" : "pipe",
+    maxBuffer: 32 * 1024 * 1024,
+    ...opts,
   });
 }
 
@@ -108,15 +109,15 @@ function ensureVenv() {
   const pip = spawnPython(
     py,
     ["-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
-    { cwd: engineRoot },
+    { cwd: engineRoot, inherit: true },
   );
-  if (pip.status !== 0) failSpawn("pip upgrade", pip);
+  if (pip.status !== 0) fail(`pip upgrade failed (exit ${pip.status})`);
   const req = spawnPython(
     py,
     ["-m", "pip", "install", "-r", "requirements.txt"],
-    { cwd: engineRoot },
+    { cwd: engineRoot, inherit: true },
   );
-  if (req.status !== 0) failSpawn("pip install", req);
+  if (req.status !== 0) fail(`pip install failed (exit ${req.status})`);
   return py;
 }
 
@@ -135,33 +136,15 @@ function copyFiltered(src, dest) {
 }
 
 function download(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = createWriteStream(dest);
-    https
-      .get(url, (res) => {
-        if (
-          res.statusCode &&
-          res.statusCode >= 300 &&
-          res.statusCode < 400 &&
-          res.headers.location
-        ) {
-          file.close();
-          try {
-            fs.unlinkSync(dest);
-          } catch {
-            /* ignore */
-          }
-          download(res.headers.location, dest).then(resolve, reject);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode} for ${url}`));
-          return;
-        }
-        pipeline(res, file).then(resolve, reject);
-      })
-      .on("error", reject);
-  });
+  console.log(`[voice-pack] Downloading ${url}…`);
+  const curl = spawnSync(
+    "curl.exe",
+    ["-L", "--fail", "--retry", "3", "-A", "AurumVoicePack/0.3.5", "-o", dest, url],
+    { encoding: "utf8", stdio: "inherit" },
+  );
+  if (curl.status !== 0 || !fs.existsSync(dest) || fs.statSync(dest).size < 1000) {
+    fail(`download failed for ${url} (exit ${curl.status})`);
+  }
 }
 
 function unzip(zipPath, destDir) {
@@ -186,7 +169,6 @@ async function installEmbeddableRuntime(outRoot) {
   const zipName = `python-${PYTHON_EMBED_VERSION}-embed-amd64.zip`;
   const zipPath = path.join(cacheDir, zipName);
   if (!fs.existsSync(zipPath)) {
-    console.log(`[voice-pack] Downloading ${PYTHON_EMBED_URL}…`);
     await download(PYTHON_EMBED_URL, zipPath);
   }
 
