@@ -5,99 +5,219 @@
 import { VOICE_MAX_RECORD_MS, VOICE_MIN_AUDIO_BYTES } from "@aurum/shared";
 
 export type CaptureResult =
-  | { ok: true; blob: Blob; mimeType: string; durationMs: number }
-  | { ok: false; code: "permission" | "empty" | "cancelled" | "error"; message: string };
+  | {
+      ok: true;
+      blob: Blob;
+      mimeType: string;
+      durationMs: number;
+      chunkCount: number;
+      requestedMimeType: string | null;
+    }
+  | {
+      ok: false;
+      code: "permission" | "empty" | "cancelled" | "error";
+      message: string;
+      diagnostics?: CaptureDiagnostics;
+    };
+
+export type CaptureDiagnostics = {
+  durationMs: number;
+  chunkCount: number;
+  blobBytes: number;
+  mimeType: string | null;
+  requestedMimeType: string | null;
+  recorderState: string | null;
+};
 
 export class VoiceCaptureSession {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
-  private chunks: BlobPart[] = [];
+  private chunks: Blob[] = [];
   private startedAt = 0;
   private maxTimer: ReturnType<typeof setTimeout> | null = null;
   private cancelled = false;
+  private requestedMimeType: string | null = null;
+  private chunkCount = 0;
 
-  async start(opts?: { deviceId?: string | null }): Promise<{ ok: boolean; error?: string }> {
-    this.cleanup();
+  async start(opts?: {
+    deviceId?: string | null;
+  }): Promise<{ ok: boolean; error?: string }> {
+    this.cleanupTracksOnly();
     this.cancelled = false;
     this.chunks = [];
+    this.chunkCount = 0;
     try {
       const constraints: MediaStreamConstraints = {
         audio: opts?.deviceId
           ? { deviceId: { exact: opts.deviceId } }
-          : true,
+          : {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
         video: false,
       };
       this.stream = await navigator.mediaDevices.getUserMedia(constraints);
       const mimeType = pickMimeType();
-      this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
-      this.recorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) this.chunks.push(ev.data);
-      };
+      this.requestedMimeType = mimeType ?? null;
+      this.recorder = new MediaRecorder(
+        this.stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      this.recorder.addEventListener("dataavailable", (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          this.chunks.push(ev.data);
+          this.chunkCount += 1;
+        }
+      });
       this.startedAt = Date.now();
-      this.recorder.start(100);
+      // Timeslice keeps chunks flowing; final stop still emits a last chunk.
+      this.recorder.start(250);
       this.maxTimer = setTimeout(() => {
         void this.stop();
       }, VOICE_MAX_RECORD_MS);
+      console.info("[aurum:voice:capture]", {
+        event: "start",
+        requestedMimeType: this.requestedMimeType,
+        actualMimeType: this.recorder.mimeType || null,
+        isTypeSupported: this.requestedMimeType
+          ? MediaRecorder.isTypeSupported(this.requestedMimeType)
+          : null,
+      });
       return { ok: true };
     } catch (err) {
-      this.cleanup();
-      const message = err instanceof Error ? err.message : "Microphone unavailable";
-      const code = /Permission|NotAllowed|denied/i.test(message)
-        ? "permission"
-        : "error";
+      this.cleanupTracksOnly();
+      const message =
+        err instanceof Error ? err.message : "Microphone unavailable";
       return { ok: false, error: message };
     }
   }
 
   async stop(): Promise<CaptureResult> {
     if (this.cancelled) {
-      this.cleanup();
+      this.cleanupTracksOnly();
       return { ok: false, code: "cancelled", message: "Cancelled" };
     }
-    const durationMs = Date.now() - this.startedAt;
-    const blob = await this.finalizeRecorder();
-    this.cleanup();
-    if (!blob || blob.size < VOICE_MIN_AUDIO_BYTES) {
-      return { ok: false, code: "empty", message: "I didn't catch that." };
+    const durationMs = Math.max(0, Date.now() - this.startedAt);
+    const finalized = await this.finalizeRecorder();
+    const blob = finalized.blob;
+    const mimeType =
+      blob?.type ||
+      this.recorder?.mimeType ||
+      this.requestedMimeType ||
+      "audio/webm";
+    const diagnostics: CaptureDiagnostics = {
+      durationMs,
+      chunkCount: this.chunkCount,
+      blobBytes: blob?.size ?? 0,
+      mimeType,
+      requestedMimeType: this.requestedMimeType,
+      recorderState: this.recorder?.state ?? null,
+    };
+    console.info("[aurum:voice:capture]", {
+      event: "stop",
+      ...diagnostics,
+    });
+    this.cleanupTracksOnly();
+
+    if (!blob || blob.size <= 0) {
+      return {
+        ok: false,
+        code: "empty",
+        message: "I didn't catch that.",
+        diagnostics,
+      };
+    }
+    if (blob.size < VOICE_MIN_AUDIO_BYTES) {
+      return {
+        ok: false,
+        code: "empty",
+        message: "I didn't catch that.",
+        diagnostics,
+      };
     }
     return {
       ok: true,
       blob,
-      mimeType: blob.type || "audio/webm",
+      mimeType,
       durationMs,
+      chunkCount: this.chunkCount,
+      requestedMimeType: this.requestedMimeType,
     };
   }
 
   cancel(): void {
     this.cancelled = true;
-    this.cleanup();
+    this.cleanupTracksOnly();
   }
 
   isActive(): boolean {
     return Boolean(this.recorder && this.recorder.state !== "inactive");
   }
 
-  private finalizeRecorder(): Promise<Blob | null> {
+  /**
+   * Stop MediaRecorder and wait until the final dataavailable has been applied.
+   * Calling stop() alone can race: onstop may run before the last chunk is queued.
+   */
+  private finalizeRecorder(): Promise<{ blob: Blob | null }> {
     return new Promise((resolve) => {
       const rec = this.recorder;
-      if (!rec || rec.state === "inactive") {
-        resolve(this.chunks.length ? new Blob(this.chunks, { type: "audio/webm" }) : null);
+      if (!rec) {
+        resolve({ blob: null });
         return;
       }
-      rec.onstop = () => {
-        const type = rec.mimeType || "audio/webm";
-        resolve(this.chunks.length ? new Blob(this.chunks, { type }) : null);
-      };
-      try {
-        rec.requestData();
-        rec.stop();
-      } catch {
-        resolve(null);
+      if (rec.state === "inactive") {
+        resolve({
+          blob: this.chunks.length
+            ? new Blob(this.chunks, {
+                type: rec.mimeType || this.requestedMimeType || "audio/webm",
+              })
+            : null,
+        });
+        return;
       }
+
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        const type =
+          rec.mimeType || this.requestedMimeType || "audio/webm";
+        resolve({
+          blob: this.chunks.length ? new Blob(this.chunks, { type }) : null,
+        });
+      };
+
+      rec.addEventListener(
+        "stop",
+        () => {
+          // Allow any trailing dataavailable from stop() to flush first.
+          setTimeout(finish, 0);
+        },
+        { once: true },
+      );
+
+      try {
+        if (rec.state === "recording") {
+          try {
+            rec.requestData();
+          } catch {
+            // Some Chromium builds throw if no data yet — stop still finalizes.
+          }
+          rec.stop();
+        } else {
+          finish();
+        }
+      } catch {
+        finish();
+      }
+
+      // Safety: never hang the overlay if stop events are dropped.
+      setTimeout(finish, 1500);
     });
   }
 
-  private cleanup(): void {
+  private cleanupTracksOnly(): void {
     if (this.maxTimer) {
       clearTimeout(this.maxTimer);
       this.maxTimer = null;
@@ -120,18 +240,25 @@ export class VoiceCaptureSession {
       }
       this.stream = null;
     }
+    // Chunks are only cleared here after stop() has already assembled the Blob
+    // (or on cancel / failed start). Never clear before finalizeRecorder resolves.
     this.chunks = [];
+    this.chunkCount = 0;
   }
 }
 
-function pickMimeType(): string | undefined {
+export function pickMimeType(): string | undefined {
   const candidates = [
     "audio/webm;codecs=opus",
     "audio/webm",
+    "audio/mp4",
     "audio/ogg;codecs=opus",
   ];
   for (const c of candidates) {
-    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) {
+    if (
+      typeof MediaRecorder !== "undefined" &&
+      MediaRecorder.isTypeSupported(c)
+    ) {
       return c;
     }
   }

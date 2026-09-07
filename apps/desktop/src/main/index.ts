@@ -685,6 +685,10 @@ function registerIpc(): void {
     if (bytes.byteLength > 4 * 1024 * 1024) {
       return { ok: false, error: "Audio too large.", code: "too_large" };
     }
+    console.info("[aurum:voice:ipc:stt]", {
+      bytes: bytes.byteLength,
+      mimeType: parsed.data.mimeType,
+    });
     return ensureVoiceBridge().transcribe({
       bytes,
       mimeType: parsed.data.mimeType,

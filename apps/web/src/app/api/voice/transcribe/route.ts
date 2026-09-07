@@ -50,14 +50,17 @@ export async function POST(request: Request) {
   }
   if (file.size < VOICE_MIN_AUDIO_BYTES) {
     return NextResponse.json(
-      { error: "I didn't catch that.", code: "empty_audio", transcript: "" },
+      { error: "I didn't catch that.", code: "EMPTY_AUDIO", transcript: "" },
       { status: 400 },
     );
   }
 
   const mimeType = file.type || "audio/webm";
   if (!/^audio\//i.test(mimeType)) {
-    return NextResponse.json({ error: "Unsupported audio type.", code: "bad_mime" }, { status: 415 });
+    return NextResponse.json(
+      { error: "Unsupported audio type.", code: "UNSUPPORTED_AUDIO_FORMAT" },
+      { status: 415 },
+    );
   }
 
   const started = Date.now();
@@ -70,12 +73,18 @@ export async function POST(request: Request) {
       mimeType,
       latencyMs: result.latencyMs,
       model: result.model,
+      source: result.source,
+      transcriptLen: result.transcript.length,
       empty: !result.transcript,
       totalMs: Date.now() - started,
     });
     if (!result.transcript) {
       return NextResponse.json(
-        { error: "I didn't catch that.", code: "empty_transcript", transcript: "" },
+        {
+          error: "I didn't catch that.",
+          code: "NO_SPEECH_DETECTED",
+          transcript: "",
+        },
         { status: 400 },
       );
     }
@@ -84,15 +93,17 @@ export async function POST(request: Request) {
       latencyMs: result.latencyMs,
       provider: result.provider,
       model: result.model,
+      source: result.source,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Transcription failed";
     console.warn("[aurum:voice:stt]", {
       userIdPrefix: auth.user.id.slice(0, 8),
+      code: "STT_PROVIDER_ERROR",
       error: message.slice(0, 160),
     });
     return NextResponse.json(
-      { error: "Transcription unavailable.", code: "stt_failed" },
+      { error: "Transcription unavailable.", code: "STT_PROVIDER_ERROR" },
       { status: 502 },
     );
   }

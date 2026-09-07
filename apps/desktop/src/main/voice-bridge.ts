@@ -88,6 +88,14 @@ export class VoiceBridge {
           latencyMs: Date.now() - started,
         };
       }
+      console.info("[aurum:voice:bridge:stt]", {
+        httpStatus: res.status,
+        latencyMs: Date.now() - started,
+        transcriptLen: (data.transcript ?? "").length,
+        model: (data as { model?: string }).model ?? null,
+        source: (data as { source?: string }).source ?? null,
+        code: data.code ?? null,
+      });
       return {
         ok: true,
         transcript: data.transcript ?? "",

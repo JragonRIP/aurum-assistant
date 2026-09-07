@@ -849,6 +849,14 @@ export function OverlayApp() {
           return;
         }
         try {
+          console.info("[aurum:voice:overlay]", {
+            event: "submit",
+            durationMs: stopped.durationMs,
+            blobBytes: stopped.blob.size,
+            mimeType: stopped.mimeType,
+            chunkCount: stopped.chunkCount,
+            requestedMimeType: stopped.requestedMimeType,
+          });
           const ab = await stopped.blob.arrayBuffer();
           const bytes = new Uint8Array(ab);
           const res = await window.aurumDesktop.voiceTranscribe?.({
