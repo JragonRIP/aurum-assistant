@@ -2,6 +2,7 @@
  * Stage packaged app contents into app-dist/ (not gitignored).
  * electron-builder excludes gitignored paths like dist/, so we copy explicitly.
  */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,5 +62,17 @@ fs.writeFileSync(
   path.join(stage, "package.json"),
   JSON.stringify(stagedPkg, null, 2) + "\n",
 );
+
+// Guardrail: main/preload must not leave unresolved workspace imports.
+const check = spawnSync(
+  process.execPath,
+  [path.join(root, "scripts", "assert-no-workspace-requires.mjs"), "app-dist"],
+  { cwd: root, encoding: "utf8" },
+);
+if (check.status !== 0) {
+  console.error(check.stdout || "");
+  console.error(check.stderr || "");
+  process.exit(check.status ?? 1);
+}
 
 console.log("Staged packaged app at app-dist/");
