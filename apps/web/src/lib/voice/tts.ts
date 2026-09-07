@@ -83,7 +83,7 @@ export function parseRetryAfterMs(err: unknown): number | null {
   }
   if (!raw && err instanceof Error) {
     const m = err.message.match(/retry[- ]after[:\s]+(\d+)/i);
-    if (m) raw = m[1];
+    if (m?.[1]) raw = m[1];
   }
   if (!raw) return null;
   const asNum = Number(raw);
