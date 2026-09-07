@@ -36,12 +36,15 @@ describe("voice capture finalization contracts", () => {
     assert.match(src, /blob\.size <= 0/);
   });
 
-  it("overlay submits after capture stop with diagnostics", () => {
+  it("overlay auto-submits PTT transcript via canonical submit", () => {
     const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
     assert.match(src, /captureRef\.current\.stop\(\)/);
     assert.match(src, /voiceTranscribe/);
     assert.match(src, /blobBytes/);
     assert.match(src, /chunkCount/);
+    assert.match(src, /submitOverlayRequestRef\.current/);
+    assert.match(src, /origin:\s*["']voice["']/);
+    assert.match(src, /shouldAutoSubmitVoiceTranscript/);
   });
 });
 

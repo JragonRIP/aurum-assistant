@@ -15,6 +15,11 @@ import {
   approvalPrimaryLabel,
 } from "./approval-copy";
 import { normalizeOverlayText } from "./overlay-text";
+import {
+  overlaySubmitBlockReason,
+  shouldAutoSubmitVoiceTranscript,
+  type OverlaySubmitRequest,
+} from "./overlay-submit";
 import { VoiceCaptureSession } from "./voice-capture";
 import { VoicePlayback } from "./voice-playback";
 
@@ -136,6 +141,9 @@ export function OverlayApp() {
   const captureRef = useRef(new VoiceCaptureSession());
   const playbackRef = useRef(new VoicePlayback());
   const listeningRef = useRef(false);
+  const pairedRef = useRef(false);
+  const streamingRef = useRef(false);
+  const transcribingRef = useRef(false);
   const [streaming, setStreaming] = useState(false);
   const [acting, setActing] = useState(false);
   const [successFlash, setSuccessFlash] = useState(false);
@@ -180,6 +188,22 @@ export function OverlayApp() {
   useEffect(() => {
     replyRef.current = reply;
   }, [reply]);
+
+  useEffect(() => {
+    pairedRef.current = paired;
+  }, [paired]);
+
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
+
+  useEffect(() => {
+    transcribingRef.current = transcribing;
+  }, [transcribing]);
+
+  useEffect(() => {
+    listeningRef.current = listening;
+  }, [listening]);
 
   const refresh = useCallback(async () => {
     try {
@@ -682,13 +706,23 @@ export function OverlayApp() {
     }
   }
 
-  async function runChatTurn(text: string, opts?: { fromVoice?: boolean }) {
-    if (!text || streaming || awaitingApproval || listening || transcribing) return;
-    if (!paired) {
+  async function submitOverlayRequest(opts: OverlaySubmitRequest) {
+    const text = opts.text.trim();
+    const block = overlaySubmitBlockReason({
+      text,
+      paired: pairedRef.current,
+      streaming: streamingRef.current,
+      awaitingApproval: awaitingApprovalRef.current,
+      listening: listeningRef.current,
+      transcribing: transcribingRef.current,
+    });
+    if (block === "empty" || block === "busy") return;
+    if (block === "unpaired") {
       setStatus("CONNECT");
       return;
     }
-    voiceOriginRef.current = Boolean(opts?.fromVoice);
+
+    voiceOriginRef.current = opts.origin === "voice";
     playbackRef.current.stop();
     setSpeaking(false);
     setCommand("");
@@ -696,6 +730,7 @@ export function OverlayApp() {
     setError(null);
     setWarning(null);
     setAwaitingUser(false);
+    streamingRef.current = true;
     setStreaming(true);
     setActing(false);
     setStatus("THINKING");
@@ -717,6 +752,7 @@ export function OverlayApp() {
       if (payload.id !== handle.id) return;
       if (payload.event) applyEvent(payload.event as StreamEvent);
       if (payload.done || payload.error) {
+        streamingRef.current = false;
         setStreaming(false);
         setActing(false);
         inFlightTools.current.clear();
@@ -746,9 +782,14 @@ export function OverlayApp() {
     });
   }
 
+  const submitOverlayRequestRef = useRef(submitOverlayRequest);
+  submitOverlayRequestRef.current = submitOverlayRequest;
+
   async function handleSubmit() {
-    const text = command.trim();
-    await runChatTurn(text, { fromVoice: false });
+    await submitOverlayRequest({
+      text: command,
+      origin: "text",
+    });
   }
 
   async function speakApprovalPrompt() {
@@ -774,6 +815,7 @@ export function OverlayApp() {
     try {
       const res = await window.aurumDesktop.voiceSynthesize?.({ text });
       if (!res?.ok || !res.audioBase64) {
+        // skipped / tts_disabled / short_only: keep the visible text answer
         if (res?.error && res.code !== "tts_disabled" && !(res as { skipped?: boolean }).skipped) {
           setActivitySmooth("Voice playback unavailable.");
           window.setTimeout(() => setActivitySmooth(null), 2200);
@@ -802,6 +844,7 @@ export function OverlayApp() {
         captureRef.current.cancel();
         listeningRef.current = false;
         setListening(false);
+        transcribingRef.current = false;
         setTranscribing(false);
         setActivitySmooth(null);
         setStatus("READY");
@@ -811,7 +854,7 @@ export function OverlayApp() {
         // Barge-in: stop speech when starting new PTT
         playbackRef.current.stop();
         setSpeaking(false);
-        if (streaming || awaitingApproval) return;
+        if (streamingRef.current || awaitingApprovalRef.current) return;
         const started = await captureRef.current.start();
         if (!started.ok) {
           setError(
@@ -834,11 +877,13 @@ export function OverlayApp() {
         if (!listeningRef.current && !captureRef.current.isActive()) return;
         listeningRef.current = false;
         setListening(false);
+        transcribingRef.current = true;
         setTranscribing(true);
         setStatus("TRANSCRIBING");
         setActivitySmooth(defaultPhaseActivity("transcribing"));
         const stopped = await captureRef.current.stop();
         if (!stopped.ok) {
+          transcribingRef.current = false;
           setTranscribing(false);
           setActivitySmooth(null);
           setStatus("READY");
@@ -863,17 +908,25 @@ export function OverlayApp() {
             bytes,
             mimeType: stopped.mimeType,
           });
+          // Clear transcribing BEFORE canonical submit so gate refs allow the turn.
+          transcribingRef.current = false;
           setTranscribing(false);
           setActivitySmooth(null);
-          if (!res?.ok || !res.transcript?.trim()) {
+          const transcript = res?.transcript?.trim() ?? "";
+          if (!res?.ok || !shouldAutoSubmitVoiceTranscript(transcript)) {
             setReply(res?.error || "I didn't catch that.");
             setExpanded(true);
             setStatus("READY");
             return;
           }
-          setCommand(res.transcript);
-          await runChatTurn(res.transcript.trim(), { fromVoice: true });
+          // Brief visual context, then immediately auto-submit via the same pipeline.
+          setCommand(transcript);
+          await submitOverlayRequestRef.current({
+            text: transcript,
+            origin: "voice",
+          });
         } catch {
+          transcribingRef.current = false;
           setTranscribing(false);
           setActivitySmooth(null);
           setReply("Transcription unavailable.");
@@ -888,9 +941,7 @@ export function OverlayApp() {
       unsubPtt?.();
       unsubFocus?.();
     };
-    // Intentionally once — handlers use refs/state setters
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [setActivitySmooth]);
 
   if (!paired) {
     return (
