@@ -46,11 +46,10 @@ export async function transcribeAudio(opts: {
           ],
         },
       ],
+      // Prefer SMART when supported; ignore if SDK strips unknown fields
       config: {
-        // Prefer SMART when supported; ignore if SDK strips unknown fields
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...( { audioTranscriptionConfig: { mode: "SMART" } } as any),
-      },
+        audioTranscriptionConfig: { mode: "SMART" },
+      } as Record<string, unknown>,
     });
 
     const transcript = extractText(response).trim();

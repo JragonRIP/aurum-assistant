@@ -41,8 +41,7 @@ export async function synthesizeSpeech(opts: {
     model,
     contents: speechText,
     config: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      responseModalities: ["AUDIO"] as any,
+      responseModalities: ["AUDIO"],
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: {
@@ -50,7 +49,7 @@ export async function synthesizeSpeech(opts: {
           },
         },
       },
-    },
+    } as Record<string, unknown>,
   });
 
   const inline = extractInlineAudio(response);
