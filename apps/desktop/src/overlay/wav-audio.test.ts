@@ -95,7 +95,7 @@ describe("Overlay TTS diagnostic contracts", () => {
     const bridge = readFileSync(join(here, "..", "main", "voice-bridge.ts"), "utf8");
     assert.match(bridge, /aurum-tts-debug\.wav|debugWavPath/);
     assert.match(bridge, /inspectWav/);
-    assert.match(bridge, /synth_retry/);
+    assert.match(bridge, /synth_attempt|withTtsHttpRetries/);
     assert.match(bridge, /playableMime = "audio\/wav"/);
   });
 

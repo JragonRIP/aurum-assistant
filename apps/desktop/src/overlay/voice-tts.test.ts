@@ -99,6 +99,15 @@ describe("OverlayApp TTS contracts", () => {
     assert.match(src, /getVoicePlayback/);
   });
 
+  it("TTS failure stays nonfatal READY with warning only", () => {
+    const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
+    assert.match(src, /Voice playback unavailable/);
+    const speakIdx = src.indexOf("async function speakFinalReply");
+    const speakChunk = src.slice(speakIdx, speakIdx + 4500);
+    assert.equal(/setStatus\(["']ERROR["']\)/.test(speakChunk), false);
+    assert.match(speakChunk, /setStatus\(["']READY["']\)/);
+  });
+
   it("overlay enables autoplay without user gesture", () => {
     const main = readFileSync(join(here, "..", "main", "index.ts"), "utf8");
     assert.match(main, /autoplay-policy/);

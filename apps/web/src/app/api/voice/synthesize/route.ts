@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
-import { isGeminiConfigured } from "@aurum/ai";
+import {
+  AIProviderError,
+  classifyProviderError,
+  isGeminiConfigured,
+} from "@aurum/ai";
 import { isAuthError, requireAuth } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/ai/rate-limit";
-import { synthesizeSpeech } from "@/lib/voice/tts";
+import {
+  httpStatusForTtsError,
+  providerErrorClassFor,
+  synthesizeSpeech,
+} from "@/lib/voice/tts";
 import { getVoiceSettings } from "@/lib/voice/settings";
 
 export const runtime = "nodejs";
@@ -44,11 +52,18 @@ export async function POST(request: Request) {
   const voice = body?.voice?.trim() || settings.ttsVoice;
 
   try {
-    const result = await synthesizeSpeech({ text, voice });
+    const result = await synthesizeSpeech({
+      text,
+      voice,
+      signal: request.signal,
+    });
     console.info("[aurum:voice:tts]", {
       userIdPrefix: auth.user.id.slice(0, 8),
       latencyMs: result.latencyMs,
       model: result.model,
+      primaryModel: result.primaryModel,
+      fallbackUsed: result.fallbackUsed,
+      attemptsTotal: result.attemptsTotal,
       voice: result.voice,
       speechChars: result.speechText.length,
     });
@@ -60,16 +75,30 @@ export async function POST(request: Request) {
       provider: result.provider,
       model: result.model,
       voice: result.voice,
+      primaryModel: result.primaryModel,
+      fallbackModel: result.fallbackModel,
+      fallbackUsed: result.fallbackUsed,
+      attemptsTotal: result.attemptsTotal,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "TTS failed";
+    const classified =
+      err instanceof AIProviderError
+        ? err
+        : classifyProviderError(err, "gemini");
+    const status = httpStatusForTtsError(classified);
     console.warn("[aurum:voice:tts]", {
       userIdPrefix: auth.user.id.slice(0, 8),
-      error: message.slice(0, 160),
+      provider_error_class: providerErrorClassFor(classified),
+      httpStatus: status,
+      error: classified.message.slice(0, 160),
     });
     return NextResponse.json(
-      { error: "Voice playback unavailable.", code: "tts_failed" },
-      { status: 502 },
+      {
+        error: "Voice playback unavailable.",
+        code: classified.code ?? "tts_failed",
+        providerErrorClass: providerErrorClassFor(classified),
+      },
+      { status },
     );
   }
 }

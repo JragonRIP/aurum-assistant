@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
-import { buildSpeechResponse, isGeminiConfigured } from "@aurum/ai";
+import {
+  AIProviderError,
+  buildSpeechResponse,
+  classifyProviderError,
+  isGeminiConfigured,
+} from "@aurum/ai";
 import { shouldSpeakResponse } from "@aurum/shared";
 import { isDeviceAuthError, requireDeviceAuth } from "@/lib/devices/auth";
 import { checkRateLimit } from "@/lib/ai/rate-limit";
-import { synthesizeSpeech } from "@/lib/voice/tts";
+import {
+  httpStatusForTtsError,
+  providerErrorClassFor,
+  synthesizeSpeech,
+} from "@/lib/voice/tts";
 import { getVoiceSettings } from "@/lib/voice/settings";
 
 export const runtime = "nodejs";
@@ -94,12 +103,20 @@ export async function POST(request: Request) {
   const voice = body?.voice?.trim() || settings.ttsVoice;
 
   try {
-    const result = await synthesizeSpeech({ text, voice });
+    const result = await synthesizeSpeech({
+      text,
+      voice,
+      signal: request.signal,
+    });
     console.info("[aurum:voice:tts:device]", {
       stage: "ok",
       deviceIdPrefix: auth.device.id.slice(0, 8),
       latencyMs: result.latencyMs,
       model: result.model,
+      primaryModel: result.primaryModel,
+      fallbackModel: result.fallbackModel,
+      fallbackUsed: result.fallbackUsed,
+      attemptsTotal: result.attemptsTotal,
       voice: result.voice,
       mimeType: result.mimeType?.split(";")[0] ?? null,
       audioBytesApprox: Math.floor((result.audioBase64?.length ?? 0) * 0.75),
@@ -116,19 +133,36 @@ export async function POST(request: Request) {
       provider: result.provider,
       model: result.model,
       voice: result.voice,
+      primaryModel: result.primaryModel,
+      fallbackModel: result.fallbackModel,
+      fallbackUsed: result.fallbackUsed,
+      attemptsTotal: result.attemptsTotal,
       spokenMode: settings.spokenMode,
       voiceEnabled: settings.enabled,
       bypassSpokenMode: bypass,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "TTS failed";
+    const classified =
+      err instanceof AIProviderError
+        ? err
+        : classifyProviderError(err, "gemini");
+    const status = httpStatusForTtsError(classified);
+    const providerErrorClass = providerErrorClassFor(classified);
     console.warn("[aurum:voice:tts:device]", {
-      code: "tts_failed",
-      error: message.slice(0, 160),
+      stage: "error",
+      code: classified.code ?? "tts_failed",
+      provider_error_class: providerErrorClass,
+      httpStatus: status,
+      upstreamStatus: classified.httpStatus ?? null,
+      error: classified.message.slice(0, 160),
     });
     return NextResponse.json(
-      { error: "Voice playback unavailable.", code: "tts_failed" },
-      { status: 502 },
+      {
+        error: "Voice playback unavailable.",
+        code: classified.code ?? "tts_failed",
+        providerErrorClass,
+      },
+      { status },
     );
   }
 }

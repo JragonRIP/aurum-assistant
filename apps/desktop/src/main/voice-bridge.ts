@@ -16,6 +16,12 @@ import {
   parseSampleRateFromMime,
   pcmToWav,
 } from "../overlay/wav-audio";
+import {
+  isRateLimitedTtsStatus,
+  isTransientTtsHttpStatus,
+  parseRetryAfterHeader,
+  withTtsHttpRetries,
+} from "./tts-http-retry";
 
 export type TranscribeResult = {
   ok: boolean;
@@ -67,14 +73,6 @@ function toPlayableWavBytes(
     return { wav, sourceBytes: raw.byteLength };
   }
   return { wav: raw, sourceBytes: raw.byteLength };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientTtsStatus(status: number): boolean {
-  return status === 502 || status === 503;
 }
 
 export class VoiceBridge {
@@ -158,6 +156,7 @@ export class VoiceBridge {
     bypassSpokenMode?: boolean;
     debugDumpWav?: boolean;
     purpose?: string;
+    signal?: AbortSignal;
   }): Promise<SynthesizeResult> {
     const cred = this.getCred();
     if (!cred) return { ok: false, error: "Device not paired", code: "DEVICE_OFFLINE" };
@@ -169,29 +168,10 @@ export class VoiceBridge {
       bypassSpokenMode: Boolean(opts.bypassSpokenMode),
       speechTextLen: opts.text.trim().length,
     });
-    try {
-      const postOnce = () =>
-        authenticatedDeviceFetch(cred, "/api/devices/voice/synthesize", {
-          method: "POST",
-          body: JSON.stringify({
-            text: opts.text,
-            voice: opts.voice,
-            bypassSpokenMode: opts.bypassSpokenMode === true,
-          }),
-        });
 
-      let res = await postOnce();
-      if (!res.ok && isTransientTtsStatus(res.status)) {
-        appendVoiceLog("synth_retry", {
-          purpose,
-          synth_status: res.status,
-          attempt: 2,
-        });
-        await sleep(450);
-        res = await postOnce();
-      }
-
-      const data = (await res.json().catch(() => ({}))) as {
+    type ParsedOk = {
+      res: Response;
+      data: {
         audioBase64?: string;
         mimeType?: string;
         speechText?: string;
@@ -202,34 +182,108 @@ export class VoiceBridge {
         spokenMode?: string;
         voiceEnabled?: boolean;
         bypassSpokenMode?: boolean;
+        providerErrorClass?: string;
+        primaryModel?: string;
+        fallbackModel?: string | null;
+        fallbackUsed?: boolean;
+        attemptsTotal?: number;
+        model?: string;
       };
-      if (!res.ok) {
-        const authFail = mapAuthFailure(res.status, data);
-        appendVoiceLog("synth_status", {
-          purpose,
-          synth_status: res.status,
-          code: data.code ?? authFail?.code ?? "tts_failed",
-          ok: false,
-        });
-        if (authFail) {
+    };
+
+    try {
+      const parsed = await withTtsHttpRetries<ParsedOk>({
+        signal: opts.signal,
+        onAttempt: ({
+          attempt,
+          status,
+          retrying,
+          latencyMs,
+          providerErrorClass,
+          retryAfterMs,
+          budgetRemainingMs,
+        }) => {
+          appendVoiceLog("synth_attempt", {
+            purpose,
+            attempt,
+            model: null,
+            status: status ?? 0,
+            latency_ms: latencyMs,
+            provider_error_class: providerErrorClass ?? null,
+            retry_after_ms: retryAfterMs ?? null,
+            budget_remaining_ms: budgetRemainingMs ?? null,
+            retrying,
+          });
+        },
+        attempt: async (attempt) => {
+          const attemptStarted = Date.now();
+          const res = await authenticatedDeviceFetch(
+            cred,
+            "/api/devices/voice/synthesize",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                text: opts.text,
+                voice: opts.voice,
+                bypassSpokenMode: opts.bypassSpokenMode === true,
+              }),
+              signal: opts.signal,
+            },
+          );
+          const data = (await res.json().catch(() => ({}))) as ParsedOk["data"];
+          const latencyMs = Date.now() - attemptStarted;
+          const rateLimited = isRateLimitedTtsStatus(res.status);
+          const transient = isTransientTtsHttpStatus(res.status);
+          const retryAfterMs = rateLimited
+            ? parseRetryAfterHeader(res)
+            : null;
+          appendVoiceLog("synth_attempt", {
+            purpose,
+            attempt,
+            model: data.model ?? data.primaryModel ?? null,
+            status: res.status,
+            latency_ms: latencyMs,
+            provider_error_class:
+              data.providerErrorClass ??
+              (rateLimited ? "rate_limited" : null),
+            retry_after_ms: retryAfterMs,
+            retrying: !res.ok && (transient || rateLimited),
+          });
+
+          if (res.ok) {
+            return { status: res.status, transient: false, value: { res, data } };
+          }
+
+          const authFail = mapAuthFailure(res.status, data);
+          if (authFail) {
+            return {
+              status: res.status,
+              transient: false,
+              error: Object.assign(new Error(authFail.error), {
+                code: authFail.code,
+                httpStatus: res.status,
+              }),
+            };
+          }
+
           return {
-            ok: false,
-            ...authFail,
-            latencyMs: Date.now() - started,
-            httpStatus: res.status,
+            status: res.status,
+            transient,
+            rateLimited,
+            retryAfterMs,
+            error: Object.assign(
+              new Error(data.error || "Voice playback unavailable."),
+              {
+                code: data.code ?? "tts_failed",
+                httpStatus: res.status,
+                providerErrorClass: data.providerErrorClass,
+              },
+            ),
           };
-        }
-        return {
-          ok: false,
-          error: data.error || "Voice playback unavailable.",
-          code: data.code ?? "tts_failed",
-          latencyMs: Date.now() - started,
-          skipped: Boolean(data.skipped),
-          httpStatus: res.status,
-          spokenMode: data.spokenMode ?? null,
-          voiceEnabled: data.voiceEnabled ?? null,
-        };
-      }
+        },
+      });
+
+      const { res, data } = parsed;
       if (data.skipped) {
         appendVoiceLog("synth_status", {
           purpose,
@@ -239,6 +293,8 @@ export class VoiceBridge {
           spoken_mode: data.spokenMode ?? null,
           voice_enabled: data.voiceEnabled ?? null,
           speech_text_length: (data.speechText ?? "").length,
+          attempts_total: data.attemptsTotal ?? 1,
+          fallback_attempted: Boolean(data.fallbackUsed),
         });
         return {
           ok: true,
@@ -262,7 +318,6 @@ export class VoiceBridge {
       if (data.audioBase64) {
         const { wav } = toPlayableWavBytes(data.audioBase64, sourceMime);
         wavInfo = inspectWav(new Uint8Array(wav));
-        // Return the exact WAV bytes we dump — same path user confirmed audible.
         playableBase64 = wav.toString("base64");
         playableMime = "audio/wav";
         const shouldDump =
@@ -296,6 +351,11 @@ export class VoiceBridge {
         wav_bits: wavInfo?.bitsPerSample ?? null,
         wav_nonzero: wavInfo?.nonzeroSamples ?? null,
         debug_wav: dumpPath ? "1" : "0",
+        model: data.model ?? null,
+        primary_model: data.primaryModel ?? null,
+        fallback_model: data.fallbackModel ?? null,
+        fallback_attempted: Boolean(data.fallbackUsed),
+        attempts_total: data.attemptsTotal ?? null,
         voice_log: voiceLogFilePath(),
       });
 
@@ -308,6 +368,7 @@ export class VoiceBridge {
         skipped: false,
         wavOk: wavInfo?.ok ?? null,
         debugWav: Boolean(dumpPath),
+        fallbackUsed: Boolean(data.fallbackUsed),
       });
 
       return {
@@ -324,18 +385,91 @@ export class VoiceBridge {
         audioBytes: sourceBytes,
         httpStatus: res.status,
       };
-    } catch {
+    } catch (err) {
+      const errCode =
+        typeof (err as { code?: string })?.code === "string"
+          ? (err as { code: string }).code
+          : null;
+      if (
+        (err as { name?: string })?.name === "AbortError" &&
+        errCode !== "budget_exhausted"
+      ) {
+        appendVoiceLog("synth_status", {
+          purpose,
+          synth_status: 0,
+          ok: false,
+          code: "cancelled",
+          fallback_attempted: false,
+        });
+        return {
+          ok: false,
+          error: "Voice playback cancelled.",
+          code: "cancelled",
+          latencyMs: Date.now() - started,
+        };
+      }
+      if (errCode === "budget_exhausted") {
+        appendVoiceLog("synth_status", {
+          purpose,
+          synth_status: 504,
+          ok: false,
+          code: "budget_exhausted",
+          provider_error_class: "budget_exhausted",
+          fallback_attempted: false,
+          final_status: 504,
+        });
+        return {
+          ok: false,
+          error: "Voice playback unavailable.",
+          code: "budget_exhausted",
+          latencyMs: Date.now() - started,
+          httpStatus: 504,
+        };
+      }
+      const httpStatus =
+        typeof (err as { httpStatus?: number })?.httpStatus === "number"
+          ? (err as { httpStatus: number }).httpStatus
+          : 0;
+      const code =
+        typeof (err as { code?: string })?.code === "string"
+          ? (err as { code: string }).code
+          : "tts_failed";
+      const providerErrorClass =
+        typeof (err as { providerErrorClass?: string })?.providerErrorClass ===
+        "string"
+          ? (err as { providerErrorClass: string }).providerErrorClass
+          : null;
       appendVoiceLog("synth_status", {
         purpose,
-        synth_status: 0,
+        synth_status: httpStatus || 0,
         ok: false,
-        code: "tts_failed",
+        code,
+        provider_error_class: providerErrorClass,
+        fallback_attempted: false,
+        final_status: httpStatus || 0,
       });
+      if (httpStatus === 401 || httpStatus === 403) {
+        const authFail = mapAuthFailure(httpStatus, {
+          error: err instanceof Error ? err.message : undefined,
+          code,
+        });
+        return {
+          ok: false,
+          ...(authFail ?? {
+            error: "Device authentication failed.",
+            code,
+          }),
+          latencyMs: Date.now() - started,
+          httpStatus,
+        };
+      }
       return {
         ok: false,
-        error: "Voice playback unavailable.",
-        code: "tts_failed",
+        error:
+          err instanceof Error ? err.message : "Voice playback unavailable.",
+        code,
         latencyMs: Date.now() - started,
+        httpStatus: httpStatus || undefined,
       };
     }
   }
