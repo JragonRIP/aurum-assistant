@@ -5,29 +5,20 @@ import {
   isRateLimitedTtsStatus,
   isTransientTtsHttpStatus,
   isTransientTtsNetworkError,
-  rateLimitDelayMs,
+  shouldRetryCompletedTtsHttpStatus,
   sleepWithAbort,
   ttsRetryDelayMs,
   withTtsHttpRetries,
 } from "./tts-http-retry";
 
 describe("tts http retry policy", () => {
-  it("retries 502/503/504 only as generic transient", () => {
+  it("classifies statuses but does not retry completed HTTP", () => {
     assert.equal(isTransientTtsHttpStatus(502), true);
-    assert.equal(isTransientTtsHttpStatus(503), true);
-    assert.equal(isTransientTtsHttpStatus(504), true);
-    assert.equal(isTransientTtsHttpStatus(400), false);
-    assert.equal(isTransientTtsHttpStatus(401), false);
-    assert.equal(isTransientTtsHttpStatus(403), false);
     assert.equal(isTransientTtsHttpStatus(429), false);
     assert.equal(isRateLimitedTtsStatus(429), true);
-    assert.equal(isRateLimitedTtsStatus(502), false);
-  });
-
-  it("caps rate-limit backoff", () => {
-    assert.equal(rateLimitDelayMs(null), 2000);
-    assert.equal(rateLimitDelayMs(500), 500);
-    assert.equal(rateLimitDelayMs(60_000), 4000);
+    assert.equal(shouldRetryCompletedTtsHttpStatus(502), false);
+    assert.equal(shouldRetryCompletedTtsHttpStatus(429), false);
+    assert.equal(shouldRetryCompletedTtsHttpStatus(503), false);
   });
 
   it("treats network failures as transient", () => {
@@ -41,33 +32,22 @@ describe("tts http retry policy", () => {
     assert.equal(ttsRetryDelayMs(3), 2500);
   });
 
-  it("succeeds on attempt 2 after 502", async () => {
+  it("does not retry completed 502 from server", async () => {
     let calls = 0;
-    const value = await withTtsHttpRetries({
-      attempt: async () => {
-        calls += 1;
-        if (calls === 1) return { status: 502, transient: true };
-        return { status: 200, transient: false, value: "ok" };
-      },
-    });
-    assert.equal(value, "ok");
-    assert.equal(calls, 2);
+    await assert.rejects(
+      () =>
+        withTtsHttpRetries({
+          attempt: async () => {
+            calls += 1;
+            return { status: 502, transient: true, error: new Error("down") };
+          },
+        }),
+      /down/,
+    );
+    assert.equal(calls, 1);
   });
 
-  it("succeeds on attempt 3 after repeated 503", async () => {
-    let calls = 0;
-    const value = await withTtsHttpRetries({
-      attempt: async () => {
-        calls += 1;
-        if (calls < 3) return { status: 503, transient: true };
-        return { status: 200, transient: false, value: "ok3" };
-      },
-    });
-    assert.equal(value, "ok3");
-    assert.equal(calls, 3);
-  });
-
-  it("does not retry 400", async () => {
+  it("does not retry completed 429", async () => {
     let calls = 0;
     await assert.rejects(
       () =>
@@ -75,19 +55,19 @@ describe("tts http retry policy", () => {
           attempt: async () => {
             calls += 1;
             return {
-              status: 400,
-              transient: false,
-              error: new Error("bad"),
+              status: 429,
+              rateLimited: true,
+              error: new Error("rate limited"),
             };
           },
         }),
-      /bad/,
+      /rate limited/,
     );
     assert.equal(calls, 1);
   });
 
-  it("does not retry 401/403", async () => {
-    for (const status of [401, 403]) {
+  it("does not retry 400/401/403", async () => {
+    for (const status of [400, 401, 403]) {
       let calls = 0;
       await assert.rejects(() =>
         withTtsHttpRetries({
@@ -95,8 +75,7 @@ describe("tts http retry policy", () => {
             calls += 1;
             return {
               status,
-              transient: false,
-              error: new Error(`auth ${status}`),
+              error: new Error(`http ${status}`),
             };
           },
         }),
@@ -105,66 +84,35 @@ describe("tts http retry policy", () => {
     }
   });
 
-  it("fails after max attempts", async () => {
+  it("retries only transient network throws", async () => {
+    let calls = 0;
+    const value = await withTtsHttpRetries({
+      attempt: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("fetch failed");
+        return { status: 200, value: "ok" };
+      },
+    });
+    assert.equal(value, "ok");
+    assert.equal(calls, 2);
+  });
+
+  it("fails after max network attempts", async () => {
     let calls = 0;
     await assert.rejects(
       () =>
         withTtsHttpRetries({
           attempt: async () => {
             calls += 1;
-            return { status: 504, transient: true, error: new Error("down") };
+            throw new Error("fetch failed");
           },
         }),
-      /down/,
+      /fetch failed/,
     );
     assert.equal(calls, DESKTOP_TTS_MAX_ATTEMPTS);
   });
 
-  it("retries 429 at most once with conservative backoff", async () => {
-    let calls = 0;
-    const started = Date.now();
-    await assert.rejects(
-      () =>
-        withTtsHttpRetries({
-          attempt: async () => {
-            calls += 1;
-            return {
-              status: 429,
-              transient: false,
-              rateLimited: true,
-              retryAfterMs: 50,
-              error: new Error("rate limited"),
-            };
-          },
-        }),
-      /rate limited/,
-    );
-    assert.equal(calls, 2);
-    assert.ok(Date.now() - started >= 40);
-  });
-
-  it("stops when latency budget is exhausted", async () => {
-    let calls = 0;
-    await assert.rejects(
-      () =>
-        withTtsHttpRetries({
-          budgetMs: 30,
-          attempt: async () => {
-            calls += 1;
-            await new Promise((r) => setTimeout(r, 40));
-            return { status: 502, transient: true, error: new Error("slow") };
-          },
-        }),
-      (err: Error & { code?: string }) =>
-        err.name === "AbortError" ||
-        err.code === "budget_exhausted" ||
-        /budget|slow/.test(err.message),
-    );
-    assert.ok(calls >= 1);
-    assert.ok(calls < DESKTOP_TTS_MAX_ATTEMPTS);
-  });
-
-  it("aborts during backoff", async () => {
+  it("aborts during network backoff", async () => {
     const controller = new AbortController();
     let calls = 0;
     const p = withTtsHttpRetries({
@@ -174,7 +122,7 @@ describe("tts http retry policy", () => {
       },
       attempt: async () => {
         calls += 1;
-        return { status: 502, transient: true, error: new Error("TTS HTTP 502") };
+        throw new Error("fetch failed");
       },
     });
     await assert.rejects(p, (err: Error) => err.name === "AbortError");

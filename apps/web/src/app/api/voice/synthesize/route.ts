@@ -9,6 +9,7 @@ import { checkRateLimit } from "@/lib/ai/rate-limit";
 import {
   httpStatusForTtsError,
   providerErrorClassFor,
+  getTtsFailureExtras,
   synthesizeSpeech,
 } from "@/lib/voice/tts";
 import { getVoiceSettings } from "@/lib/voice/settings";
@@ -86,10 +87,24 @@ export async function POST(request: Request) {
         ? err
         : classifyProviderError(err, "gemini");
     const status = httpStatusForTtsError(classified);
+    const extras = getTtsFailureExtras(err);
+    const retryAfterMs = extras.quotaInfo?.retryDelayMs ?? null;
+    const headers =
+      status === 429 && retryAfterMs != null && retryAfterMs > 0
+        ? {
+            "Retry-After": String(
+              Math.min(86_400, Math.max(1, Math.ceil(retryAfterMs / 1000))),
+            ),
+          }
+        : undefined;
     console.warn("[aurum:voice:tts]", {
       userIdPrefix: auth.user.id.slice(0, 8),
       provider_error_class: providerErrorClassFor(classified),
       httpStatus: status,
+      circuit_open: extras.circuitOpen ?? false,
+      quota_metric: extras.quotaInfo?.quotaMetric ?? null,
+      quota_id: extras.quotaInfo?.quotaId ?? null,
+      retry_after_ms: retryAfterMs,
       error: classified.message.slice(0, 160),
     });
     return NextResponse.json(
@@ -97,8 +112,15 @@ export async function POST(request: Request) {
         error: "Voice playback unavailable.",
         code: classified.code ?? "tts_failed",
         providerErrorClass: providerErrorClassFor(classified),
+        circuitOpen: extras.circuitOpen ?? false,
+        quotaMetric: extras.quotaInfo?.quotaMetric ?? null,
+        quotaId: extras.quotaInfo?.quotaId ?? null,
+        quotaModel: extras.quotaInfo?.model ?? null,
+        quotaLimit: extras.quotaInfo?.limit ?? null,
+        retryAfterMs,
+        isDailyQuota: extras.quotaInfo?.isDailyQuota ?? null,
       },
-      { status },
+      { status, headers },
     );
   }
 }

@@ -1,7 +1,8 @@
 /**
  * Text-to-speech via Gemini TTS (server-side only).
- * Retries transient provider failures within a hard latency budget,
- * then one official fallback TTS model if time remains.
+ * Server owns provider retries within a hard latency budget.
+ * 429 / RESOURCE_EXHAUSTED uses QuotaFailure + RetryInfo (safe fields only)
+ * and a per-model circuit breaker so Aurum does not hammer daily quotas.
  */
 import {
   AIProviderError,
@@ -13,12 +14,20 @@ import {
   isGeminiConfigured,
   MAX_TTS_RETRIES,
   sleepWithSignal,
-  TTS_RATE_LIMIT_DEFAULT_BACKOFF_MS,
-  TTS_RATE_LIMIT_MAX_BACKOFF_MS,
   TTS_RETRY_DELAYS_MS,
   TTS_TOTAL_BUDGET_MS,
 } from "@aurum/ai";
 import { getGeminiClient } from "@/lib/ai/gemini-client";
+import {
+  getTtsCircuit,
+  noteTtsCircuitHit,
+  openTtsCircuit,
+} from "@/lib/voice/tts-circuit";
+import {
+  extractSafeTtsQuotaInfo,
+  safeQuotaLogFields,
+  type SafeTtsQuotaInfo,
+} from "@/lib/voice/tts-quota";
 
 export type SpeechResult = {
   /** base64 PCM or wav payload */
@@ -33,6 +42,7 @@ export type SpeechResult = {
   fallbackModel: string | null;
   fallbackUsed: boolean;
   attemptsTotal: number;
+  circuitHit?: boolean;
 };
 
 export type TtsProviderErrorClass =
@@ -45,13 +55,36 @@ export type TtsProviderErrorClass =
   | "budget_exhausted"
   | "unknown";
 
+export type TtsFailureExtras = {
+  quotaInfo?: SafeTtsQuotaInfo | null;
+  circuitOpen?: boolean;
+};
+
+export function getTtsFailureExtras(err: unknown): TtsFailureExtras {
+  const obj = err && typeof err === "object" ? (err as TtsFailureExtras) : null;
+  return {
+    quotaInfo: obj?.quotaInfo ?? null,
+    circuitOpen: Boolean(obj?.circuitOpen),
+  };
+}
+
+function withTtsFailureExtras(
+  err: AIProviderError,
+  extras: TtsFailureExtras,
+): AIProviderError {
+  const e = err as AIProviderError & TtsFailureExtras;
+  if (extras.quotaInfo) e.quotaInfo = extras.quotaInfo;
+  if (extras.circuitOpen) e.circuitOpen = true;
+  return e;
+}
+
 export function httpStatusForTtsError(err: AIProviderError): number {
   if (err.kind === "auth") return err.httpStatus === 403 ? 403 : 401;
   if (err.kind === "invalid_request") return 400;
   if (err.kind === "cancelled") {
     return err.code === "budget_exhausted" ? 504 : 499;
   }
-  if (err.httpStatus === 429) return 429;
+  if (err.code === "circuit_open" || err.httpStatus === 429) return 429;
   if (err.httpStatus === 503) return 503;
   if (err.httpStatus === 504) return 504;
   return 502;
@@ -62,46 +95,8 @@ export function providerErrorClassFor(
 ): TtsProviderErrorClass {
   if (err.code === "no_audio") return "no_audio";
   if (err.code === "budget_exhausted") return "budget_exhausted";
-  if (err.httpStatus === 429) return "rate_limited";
+  if (err.code === "circuit_open" || err.httpStatus === 429) return "rate_limited";
   return err.kind;
-}
-
-/** Parse Retry-After (seconds or HTTP-date) into milliseconds; null if absent. */
-export function parseRetryAfterMs(err: unknown): number | null {
-  const obj =
-    err && typeof err === "object" ? (err as Record<string, unknown>) : null;
-  const headers = obj?.headers as
-    | { get?: (k: string) => string | null }
-    | Record<string, string>
-    | undefined;
-  let raw: string | null = null;
-  if (headers && typeof (headers as { get?: unknown }).get === "function") {
-    raw = (headers as { get: (k: string) => string | null }).get("retry-after");
-  } else if (headers && typeof headers === "object") {
-    const rec = headers as Record<string, string>;
-    raw = rec["retry-after"] ?? rec["Retry-After"] ?? null;
-  }
-  if (!raw && err instanceof Error) {
-    const m = err.message.match(/retry[- ]after[:\s]+(\d+)/i);
-    if (m?.[1]) raw = m[1];
-  }
-  if (!raw) return null;
-  const asNum = Number(raw);
-  if (Number.isFinite(asNum) && asNum >= 0) {
-    return Math.round(asNum * 1000);
-  }
-  const when = Date.parse(raw);
-  if (!Number.isNaN(when)) {
-    return Math.max(0, when - Date.now());
-  }
-  return null;
-}
-
-export function rateLimitBackoffMs(err: AIProviderError): number {
-  const hinted = parseRetryAfterMs(err.cause ?? err);
-  const base =
-    hinted != null && hinted > 0 ? hinted : TTS_RATE_LIMIT_DEFAULT_BACKOFF_MS;
-  return Math.min(base, TTS_RATE_LIMIT_MAX_BACKOFF_MS);
 }
 
 function remainingBudgetMs(deadlineMs: number): number {
@@ -127,6 +122,50 @@ function assertBudget(deadlineMs: number, signal?: AbortSignal): void {
       code: "budget_exhausted",
     });
   }
+}
+
+function circuitOpenError(
+  model: string,
+  quotaInfo: SafeTtsQuotaInfo | null,
+): AIProviderError {
+  return withTtsFailureExtras(
+    new AIProviderError({
+      message: "Voice synthesis temporarily rate-limited.",
+      kind: "transient",
+      provider: "gemini",
+      retryable: false,
+      httpStatus: 429,
+      code: "circuit_open",
+    }),
+    { quotaInfo, circuitOpen: true },
+  );
+}
+
+/**
+ * Decide whether a 429 should be retried inside this voice turn.
+ * Daily / multi-hour RetryInfo must not burn more quota or stall the turn.
+ */
+export function shouldRetryRateLimit(opts: {
+  quotaInfo: SafeTtsQuotaInfo;
+  remainingBudgetMs: number;
+  alreadyRetried429: boolean;
+}): { retry: boolean; delayMs: number | null; reason: string } {
+  if (opts.alreadyRetried429) {
+    return { retry: false, delayMs: null, reason: "already_retried_429" };
+  }
+  if (opts.quotaInfo.isDailyQuota) {
+    return { retry: false, delayMs: null, reason: "daily_quota" };
+  }
+  const delay = opts.quotaInfo.retryDelayMs;
+  if (delay == null) {
+    // No RetryInfo: do not speculative-retry RESOURCE_EXHAUSTED (often RPD).
+    return { retry: false, delayMs: null, reason: "no_retry_info" };
+  }
+  if (delay + 500 >= opts.remainingBudgetMs) {
+    return { retry: false, delayMs: delay, reason: "delay_exceeds_budget" };
+  }
+  // Short RPM-style RetryInfo that fits the voice budget: one bounded retry.
+  return { retry: true, delayMs: delay, reason: "retry_info_within_budget" };
 }
 
 async function generateOnce(opts: {
@@ -186,6 +225,24 @@ async function runModelWithBudget(opts: {
   deadlineMs: number;
   onAttemptCounted: () => void;
 }): Promise<{ audioBase64: string; mimeType: string }> {
+  const circuit = getTtsCircuit(opts.model);
+  if (circuit.open) {
+    noteTtsCircuitHit(opts.model);
+    throw circuitOpenError(opts.model, {
+      httpStatus: 429,
+      statusText: "RESOURCE_EXHAUSTED",
+      quotaMetric: circuit.quotaMetric,
+      quotaId: circuit.quotaId,
+      model: opts.model,
+      location: null,
+      limit: null,
+      retryDelayMs: circuit.remainingMs,
+      isDailyQuota: circuit.remainingMs >= 60 * 60 * 1000,
+      isFreeTierMetric: false,
+      violations: [],
+    });
+  }
+
   const maxAttempts = MAX_TTS_RETRIES + 1;
   let lastError: AIProviderError | null = null;
   let rateLimitRetries = 0;
@@ -216,13 +273,66 @@ async function runModelWithBudget(opts: {
       });
       return audio;
     } catch (err) {
+      if (err instanceof AIProviderError && err.code === "circuit_open") {
+        throw err;
+      }
+
       const classified =
         err instanceof AIProviderError
           ? err
           : classifyProviderError(err, "gemini");
       lastError = classified;
-      const is429 = classified.httpStatus === 429;
-      const retryAfterMs = is429 ? rateLimitBackoffMs(classified) : null;
+      const is429 =
+        classified.httpStatus === 429 ||
+        classified.code === "RESOURCE_EXHAUSTED" ||
+        /RESOURCE_EXHAUSTED/i.test(classified.message);
+
+      if (is429) {
+        const quotaInfo = extractSafeTtsQuotaInfo(err);
+        openTtsCircuit({
+          model: opts.model,
+          retryDelayMs: quotaInfo.retryDelayMs,
+          quotaMetric: quotaInfo.quotaMetric,
+          quotaId: quotaInfo.quotaId,
+        });
+        const decision = shouldRetryRateLimit({
+          quotaInfo,
+          remainingBudgetMs: remainingBudgetMs(opts.deadlineMs),
+          alreadyRetried429: rateLimitRetries >= 1,
+        });
+        console.warn("[aurum:voice:tts]", {
+          stage: "attempt",
+          purpose: opts.label,
+          attempt,
+          model: opts.model,
+          status: 429,
+          latency_ms: Date.now() - attemptStarted,
+          provider_error_class: "rate_limited",
+          retrying: decision.retry,
+          retry_reason: decision.reason,
+          delay_ms: decision.delayMs,
+          budget_remaining_ms: remainingBudgetMs(opts.deadlineMs),
+          ...safeQuotaLogFields(quotaInfo),
+        });
+        const enriched = withTtsFailureExtras(
+          new AIProviderError({
+            message: classified.message,
+            kind: "transient",
+            provider: "gemini",
+            retryable: false,
+            httpStatus: 429,
+            code: classified.code ?? "RESOURCE_EXHAUSTED",
+            cause: err,
+          }),
+          { quotaInfo },
+        );
+        if (!decision.retry || decision.delayMs == null) {
+          throw enriched;
+        }
+        rateLimitRetries += 1;
+        await sleepWithSignal(decision.delayMs, opts.signal);
+        continue;
+      }
 
       let willRetry =
         classified.retryable &&
@@ -230,17 +340,9 @@ async function runModelWithBudget(opts: {
         !opts.signal?.aborted &&
         classified.kind !== "cancelled";
 
-      // 429: at most one rate-limit retry, with conservative / Retry-After backoff.
-      if (is429) {
-        if (rateLimitRetries >= 1) willRetry = false;
-        else rateLimitRetries += 1;
-      }
-
       const delayMs = willRetry
-        ? is429
-          ? (retryAfterMs ?? TTS_RATE_LIMIT_DEFAULT_BACKOFF_MS)
-          : (TTS_RETRY_DELAYS_MS[attempt - 1] ??
-            TTS_RETRY_DELAYS_MS[TTS_RETRY_DELAYS_MS.length - 1]!)
+        ? (TTS_RETRY_DELAYS_MS[attempt - 1] ??
+          TTS_RETRY_DELAYS_MS[TTS_RETRY_DELAYS_MS.length - 1]!)
         : null;
 
       if (
@@ -260,7 +362,6 @@ async function runModelWithBudget(opts: {
         latency_ms: Date.now() - attemptStarted,
         provider_error_class: providerErrorClassFor(classified),
         retrying: willRetry,
-        retry_after_ms: retryAfterMs,
         delay_ms: delayMs,
         budget_remaining_ms: remainingBudgetMs(opts.deadlineMs),
       });
@@ -315,6 +416,7 @@ export async function synthesizeSpeech(opts: {
   const started = Date.now();
   const deadlineMs = started + TTS_TOTAL_BUDGET_MS;
   let attemptsTotal = 0;
+  let circuitHit = false;
 
   const run = (model: string, label: "primary" | "fallback") =>
     runModelWithBudget({
@@ -329,7 +431,28 @@ export async function synthesizeSpeech(opts: {
       },
     });
 
+  const primaryCircuit = getTtsCircuit(primaryModel);
+  if (primaryCircuit.open) {
+    circuitHit = true;
+    noteTtsCircuitHit(primaryModel);
+  }
+
   try {
+    if (primaryCircuit.open) {
+      throw circuitOpenError(primaryModel, {
+        httpStatus: 429,
+        statusText: "RESOURCE_EXHAUSTED",
+        quotaMetric: primaryCircuit.quotaMetric,
+        quotaId: primaryCircuit.quotaId,
+        model: primaryModel,
+        location: null,
+        limit: null,
+        retryDelayMs: primaryCircuit.remainingMs,
+        isDailyQuota: primaryCircuit.remainingMs >= 60 * 60 * 1000,
+        isFreeTierMetric: false,
+        violations: [],
+      });
+    }
     const audio = await run(primaryModel, "primary");
     return {
       audioBase64: audio.audioBase64,
@@ -343,20 +466,26 @@ export async function synthesizeSpeech(opts: {
       fallbackModel,
       fallbackUsed: false,
       attemptsTotal,
+      circuitHit,
     };
   } catch (primaryErr) {
     const classified =
       primaryErr instanceof AIProviderError
         ? primaryErr
         : classifyProviderError(primaryErr, "gemini");
+    const extras = getTtsFailureExtras(primaryErr);
+    const primaryWasRateLimited =
+      classified.httpStatus === 429 ||
+      classified.code === "circuit_open" ||
+      classified.code === "RESOURCE_EXHAUSTED";
 
+    // Pro TTS has a separate per-model daily quota — fall back on Flash RPD exhaustion.
     const canFallback =
       Boolean(fallbackModel) &&
-      classified.retryable &&
       classified.kind !== "cancelled" &&
       classified.kind !== "auth" &&
       classified.kind !== "invalid_request" &&
-      classified.httpStatus !== 429 &&
+      (classified.retryable || primaryWasRateLimited) &&
       !opts.signal?.aborted &&
       remainingBudgetMs(deadlineMs) >= 1_500;
 
@@ -370,6 +499,22 @@ export async function synthesizeSpeech(opts: {
         provider_error_class: providerErrorClassFor(classified),
         final_status: classified.httpStatus ?? null,
         budget_remaining_ms: remainingBudgetMs(deadlineMs),
+        circuit_hit: circuitHit || extras.circuitOpen,
+        ...safeQuotaLogFields(
+          extras.quotaInfo ?? {
+            httpStatus: null,
+            statusText: null,
+            quotaMetric: null,
+            quotaId: null,
+            model: null,
+            location: null,
+            limit: null,
+            retryDelayMs: null,
+            isDailyQuota: false,
+            isFreeTierMetric: false,
+            violations: [],
+          },
+        ),
       });
       throw classified;
     }
@@ -378,6 +523,9 @@ export async function synthesizeSpeech(opts: {
       stage: "fallback_start",
       primary_model: primaryModel,
       fallback_model: fallbackModel,
+      reason: primaryWasRateLimited
+        ? "primary_rate_limited"
+        : "primary_transient",
       budget_remaining_ms: remainingBudgetMs(deadlineMs),
     });
 
@@ -402,12 +550,11 @@ export async function synthesizeSpeech(opts: {
         fallbackModel,
         fallbackUsed: true,
         attemptsTotal,
+        circuitHit: circuitHit || extras.circuitOpen === true,
       };
     } catch (fallbackErr) {
       const fb =
-        fallbackErr instanceof AIProviderError
-          ? fallbackErr
-          : classified;
+        fallbackErr instanceof AIProviderError ? fallbackErr : classified;
       console.warn("[aurum:voice:tts]", {
         stage: "final_failure",
         primary_model: primaryModel,

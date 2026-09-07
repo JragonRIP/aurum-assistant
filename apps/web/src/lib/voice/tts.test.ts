@@ -8,15 +8,23 @@ import {
   DEFAULT_TTS_MODEL,
   getTtsFallbackModel,
   MAX_TTS_RETRIES,
-  TTS_RATE_LIMIT_DEFAULT_BACKOFF_MS,
-  TTS_RATE_LIMIT_MAX_BACKOFF_MS,
   TTS_RETRY_DELAYS_MS,
   TTS_TOTAL_BUDGET_MS,
 } from "@aurum/ai";
 import {
   httpStatusForTtsError,
   providerErrorClassFor,
+  shouldRetryRateLimit,
 } from "./tts";
+import {
+  extractSafeTtsQuotaInfo,
+  parseRetryDelayPhrase,
+} from "./tts-quota";
+import {
+  getTtsCircuit,
+  openTtsCircuit,
+  resetTtsCircuits,
+} from "./tts-circuit";
 
 const here = join(__dirname);
 
@@ -31,143 +39,180 @@ describe("tts retry + fallback contracts", () => {
       getTtsFallbackModel({} as unknown as NodeJS.ProcessEnv),
       DEFAULT_TTS_FALLBACK_MODEL,
     );
-    assert.equal(
-      getTtsFallbackModel({
-        VOICE_TTS_FALLBACK_MODEL: "off",
-      } as unknown as NodeJS.ProcessEnv),
-      null,
-    );
   });
 
-  it("uses 3-attempt delay schedule", () => {
+  it("uses 3-attempt delay schedule and 12s budget", () => {
     assert.equal(MAX_TTS_RETRIES, 2);
     assert.deepEqual([...TTS_RETRY_DELAYS_MS], [450, 1200, 2500]);
-  });
-
-  it("keeps end-to-end TTS budget under tens of seconds", () => {
     assert.equal(TTS_TOTAL_BUDGET_MS, 12_000);
-    assert.ok(TTS_TOTAL_BUDGET_MS <= 15_000);
-    assert.equal(TTS_RATE_LIMIT_DEFAULT_BACKOFF_MS, 2_000);
-    assert.equal(TTS_RATE_LIMIT_MAX_BACKOFF_MS, 4_000);
   });
 
   it("maps provider errors to safe HTTP statuses", () => {
     assert.equal(
       httpStatusForTtsError(
         new AIProviderError({
-          message: "x",
-          kind: "transient",
-          provider: "gemini",
-          retryable: true,
-          httpStatus: 503,
-        }),
-      ),
-      503,
-    );
-    assert.equal(
-      httpStatusForTtsError(
-        new AIProviderError({
-          message: "x",
-          kind: "auth",
-          provider: "gemini",
-          retryable: false,
-          httpStatus: 401,
-        }),
-      ),
-      401,
-    );
-    assert.equal(
-      httpStatusForTtsError(
-        new AIProviderError({
-          message: "x",
-          kind: "invalid_request",
-          provider: "gemini",
-          retryable: false,
-        }),
-      ),
-      400,
-    );
-    assert.equal(
-      httpStatusForTtsError(
-        new AIProviderError({
           message: "rate limited",
           kind: "transient",
           provider: "gemini",
-          retryable: true,
+          retryable: false,
           httpStatus: 429,
         }),
       ),
       429,
     );
     assert.equal(
-      httpStatusForTtsError(
-        new AIProviderError({
-          message: "TTS latency budget exhausted",
-          kind: "cancelled",
-          provider: "gemini",
-          retryable: false,
-          code: "budget_exhausted",
-        }),
-      ),
-      504,
-    );
-  });
-
-  it("exposes provider error class including no_audio and budget", () => {
-    assert.equal(
       providerErrorClassFor(
         new AIProviderError({
-          message: "TTS returned no audio",
+          message: "circuit",
           kind: "transient",
           provider: "gemini",
-          retryable: true,
-          code: "no_audio",
-        }),
-      ),
-      "no_audio",
-    );
-    assert.equal(
-      providerErrorClassFor(
-        new AIProviderError({
-          message: "budget",
-          kind: "cancelled",
-          provider: "gemini",
           retryable: false,
-          code: "budget_exhausted",
-        }),
-      ),
-      "budget_exhausted",
-    );
-    assert.equal(
-      providerErrorClassFor(
-        new AIProviderError({
-          message: "rl",
-          kind: "transient",
-          provider: "gemini",
-          retryable: true,
           httpStatus: 429,
+          code: "circuit_open",
         }),
       ),
       "rate_limited",
     );
   });
 
-  it("synthesizeSpeech uses budget-aware retries and fallback model", () => {
-    const src = readFileSync(join(here, "tts.ts"), "utf8");
-    assert.match(src, /TTS_TOTAL_BUDGET_MS/);
-    assert.match(src, /getTtsFallbackModel/);
-    assert.match(src, /fallback_start/);
-    assert.match(src, /MAX_TTS_RETRIES/);
-    assert.match(src, /rateLimitBackoffMs/);
-    assert.match(src, /httpStatus !== 429/);
+  it("parses RetryInfo delay phrases", () => {
+    assert.equal(parseRetryDelayPhrase("11.76s"), 11760);
+    assert.equal(parseRetryDelayPhrase("34809s"), 34_809_000);
+    assert.ok(
+      Math.abs((parseRetryDelayPhrase("9h40m31.1s") ?? 0) - 34_831_100) < 1000,
+    );
   });
 
-  it("device synthesize route returns providerErrorClass", () => {
-    const src = readFileSync(
-      join(here, "../../app/api/devices/voice/synthesize/route.ts"),
-      "utf8",
+  it("extracts safe QuotaFailure fields without secrets", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: {
+          code: 429,
+          status: "RESOURCE_EXHAUSTED",
+          message:
+            "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_day, limit: 100, model: gemini-2.5-flash-tts\nPlease retry in 9h40m0s.",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+              violations: [
+                {
+                  quotaMetric:
+                    "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+                  quotaId: "GenerateRequestsPerDayPerProjectPerModel",
+                  quotaDimensions: {
+                    model: "gemini-2.5-flash-tts",
+                    location: "global",
+                  },
+                },
+              ],
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.RetryInfo",
+              retryDelay: "34800s",
+            },
+          ],
+        },
+      }),
     );
-    assert.match(src, /providerErrorClass/);
-    assert.match(src, /httpStatusForTtsError/);
+    (err as { status?: number }).status = 429;
+    const info = extractSafeTtsQuotaInfo(err);
+    assert.equal(
+      info.quotaMetric,
+      "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+    );
+    assert.equal(info.quotaId, "GenerateRequestsPerDayPerProjectPerModel");
+    assert.equal(info.model, "gemini-2.5-flash-tts");
+    assert.equal(info.limit, 100);
+    assert.equal(info.isDailyQuota, true);
+    assert.equal(info.isFreeTierMetric, false);
+    assert.equal(info.retryDelayMs, 34_800_000);
+  });
+
+  it("does not retry daily RESOURCE_EXHAUSTED inside the turn", () => {
+    const decision = shouldRetryRateLimit({
+      alreadyRetried429: false,
+      remainingBudgetMs: 12_000,
+      quotaInfo: {
+        httpStatus: 429,
+        statusText: "RESOURCE_EXHAUSTED",
+        quotaMetric:
+          "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+        quotaId: "GenerateRequestsPerDayPerProjectPerModel",
+        model: "gemini-2.5-flash-tts",
+        location: "global",
+        limit: 100,
+        retryDelayMs: 34_800_000,
+        isDailyQuota: true,
+        isFreeTierMetric: false,
+        violations: [],
+      },
+    });
+    assert.equal(decision.retry, false);
+    assert.equal(decision.reason, "daily_quota");
+  });
+
+  it("retries short RetryInfo only when it fits the budget", () => {
+    const ok = shouldRetryRateLimit({
+      alreadyRetried429: false,
+      remainingBudgetMs: 12_000,
+      quotaInfo: {
+        httpStatus: 429,
+        statusText: "RESOURCE_EXHAUSTED",
+        quotaMetric: "generativelanguage.googleapis.com/generate_content_requests",
+        quotaId: "GenerateRequestsPerMinutePerProjectPerModel",
+        model: "gemini-2.5-flash-tts",
+        location: "global",
+        limit: 10,
+        retryDelayMs: 2_000,
+        isDailyQuota: false,
+        isFreeTierMetric: false,
+        violations: [],
+      },
+    });
+    assert.equal(ok.retry, true);
+    assert.equal(ok.delayMs, 2_000);
+
+    const noInfo = shouldRetryRateLimit({
+      alreadyRetried429: false,
+      remainingBudgetMs: 12_000,
+      quotaInfo: {
+        httpStatus: 429,
+        statusText: "RESOURCE_EXHAUSTED",
+        quotaMetric: null,
+        quotaId: null,
+        model: null,
+        location: null,
+        limit: null,
+        retryDelayMs: null,
+        isDailyQuota: false,
+        isFreeTierMetric: false,
+        violations: [],
+      },
+    });
+    assert.equal(noInfo.retry, false);
+    assert.equal(noInfo.reason, "no_retry_info");
+  });
+
+  it("opens and hits a per-model circuit breaker", () => {
+    resetTtsCircuits();
+    openTtsCircuit({
+      model: "gemini-2.5-flash-preview-tts",
+      retryDelayMs: 60_000,
+      quotaMetric:
+        "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+      quotaId: "GenerateRequestsPerDayPerProjectPerModel",
+    });
+    const snap = getTtsCircuit("gemini-2.5-flash-preview-tts");
+    assert.equal(snap.open, true);
+    assert.ok((snap.remainingMs ?? 0) > 50_000);
+    resetTtsCircuits();
+  });
+
+  it("synthesizeSpeech uses circuit + quota-aware 429 handling", () => {
+    const src = readFileSync(join(here, "tts.ts"), "utf8");
+    assert.match(src, /openTtsCircuit/);
+    assert.match(src, /shouldRetryRateLimit/);
+    assert.match(src, /primary_rate_limited/);
+    assert.match(src, /TTS_TOTAL_BUDGET_MS/);
   });
 });

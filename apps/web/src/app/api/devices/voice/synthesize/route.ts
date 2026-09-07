@@ -11,6 +11,7 @@ import { checkRateLimit } from "@/lib/ai/rate-limit";
 import {
   httpStatusForTtsError,
   providerErrorClassFor,
+  getTtsFailureExtras,
   synthesizeSpeech,
 } from "@/lib/voice/tts";
 import { getVoiceSettings } from "@/lib/voice/settings";
@@ -137,6 +138,7 @@ export async function POST(request: Request) {
       fallbackModel: result.fallbackModel,
       fallbackUsed: result.fallbackUsed,
       attemptsTotal: result.attemptsTotal,
+      circuitHit: Boolean(result.circuitHit),
       spokenMode: settings.spokenMode,
       voiceEnabled: settings.enabled,
       bypassSpokenMode: bypass,
@@ -148,12 +150,29 @@ export async function POST(request: Request) {
         : classifyProviderError(err, "gemini");
     const status = httpStatusForTtsError(classified);
     const providerErrorClass = providerErrorClassFor(classified);
+    const extras = getTtsFailureExtras(err);
+    const retryAfterMs = extras.quotaInfo?.retryDelayMs ?? null;
+    const headers =
+      status === 429 && retryAfterMs != null && retryAfterMs > 0
+        ? {
+            "Retry-After": String(
+              Math.min(86_400, Math.max(1, Math.ceil(retryAfterMs / 1000))),
+            ),
+          }
+        : undefined;
     console.warn("[aurum:voice:tts:device]", {
       stage: "error",
       code: classified.code ?? "tts_failed",
       provider_error_class: providerErrorClass,
       httpStatus: status,
       upstreamStatus: classified.httpStatus ?? null,
+      circuit_open: extras.circuitOpen ?? false,
+      quota_metric: extras.quotaInfo?.quotaMetric ?? null,
+      quota_id: extras.quotaInfo?.quotaId ?? null,
+      quota_model: extras.quotaInfo?.model ?? null,
+      quota_limit: extras.quotaInfo?.limit ?? null,
+      retry_after_ms: retryAfterMs,
+      is_daily_quota: extras.quotaInfo?.isDailyQuota ?? null,
       error: classified.message.slice(0, 160),
     });
     return NextResponse.json(
@@ -161,8 +180,15 @@ export async function POST(request: Request) {
         error: "Voice playback unavailable.",
         code: classified.code ?? "tts_failed",
         providerErrorClass,
+        circuitOpen: extras.circuitOpen ?? false,
+        quotaMetric: extras.quotaInfo?.quotaMetric ?? null,
+        quotaId: extras.quotaInfo?.quotaId ?? null,
+        quotaModel: extras.quotaInfo?.model ?? null,
+        quotaLimit: extras.quotaInfo?.limit ?? null,
+        retryAfterMs,
+        isDailyQuota: extras.quotaInfo?.isDailyQuota ?? null,
       },
-      { status },
+      { status, headers },
     );
   }
 }
