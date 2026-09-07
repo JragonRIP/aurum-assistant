@@ -46,6 +46,127 @@ declare global {
         opts?: { origin?: "text" | "voice" },
       ) => Promise<{ id: string }>;
       cancelOverlayChat?: (id: string) => Promise<{ ok: boolean }>;
+      voiceTranscribe?: (opts: {
+        bytes: Uint8Array;
+        mimeType: string;
+      }) => Promise<{
+        ok: boolean;
+        transcript?: string;
+        error?: string;
+        code?: string;
+        latencyMs?: number;
+      }>;
+      voiceSynthesize?: (opts: {
+        text: string;
+        voice?: string;
+        bypassSpokenMode?: boolean;
+        debugDumpWav?: boolean;
+        purpose?: string;
+      }) => Promise<{
+        ok: boolean;
+        audioBase64?: string;
+        mimeType?: string;
+        speechText?: string;
+        error?: string;
+        code?: string;
+        latencyMs?: number;
+        skipped?: boolean;
+        spokenMode?: string | null;
+        voiceEnabled?: boolean | null;
+        debugWavPath?: string | null;
+        audioBytes?: number;
+        httpStatus?: number;
+        wavInfo?: {
+          ok: boolean;
+          sampleRate?: number;
+          numChannels?: number;
+          bitsPerSample?: number;
+          nonzeroSamples?: number;
+          durationMsApprox?: number;
+          error?: string;
+        } | null;
+      }>;
+      voiceLog?: (opts: {
+        stage: string;
+        fields?: Record<string, string | number | boolean | null>;
+      }) => Promise<{ ok: boolean; path?: string }>;
+      voiceTest?: (opts?: {
+        text?: string;
+        voice?: string;
+      }) => Promise<{
+        ok: boolean;
+        audioBase64?: string;
+        mimeType?: string;
+        error?: string;
+        httpStatus?: number;
+        audioBytes?: number;
+        debugWavPath?: string | null;
+        voiceLogPath?: string;
+        wavInfo?: {
+          ok?: boolean;
+          sampleRate?: number;
+          numChannels?: number;
+          bitsPerSample?: number;
+        } | null;
+        playbackAttempted?: boolean;
+        playPromiseResolved?: boolean;
+        playErrorName?: string | null;
+        playErrorMessage?: string | null;
+        speakingEntered?: boolean;
+        objectUrlCreated?: boolean;
+        events?: string | null;
+        webContentsAudioMuted?: boolean | null;
+        masterVolume?: number | null;
+        masterMuted?: boolean | null;
+      }>;
+      voiceDebugFlags?: (opts?: {
+        bypassSpokenMode?: boolean;
+      }) => Promise<{ ok: boolean; bypassSpokenMode?: boolean }>;
+      onVoiceTestPlay?: (
+        callback: (payload: {
+          audioBase64: string;
+          mimeType: string;
+          purpose?: string;
+        }) => void,
+      ) => () => void;
+      voiceTestPlayResult?: (payload: {
+        ok: boolean;
+        playPromiseResolved?: boolean;
+        playErrorName?: string | null;
+        playErrorMessage?: string | null;
+        audioVolume?: number | null;
+        audioMuted?: boolean | null;
+        speakingEntered?: boolean;
+        events?: string | null;
+        objectUrlCreated?: boolean;
+      }) => void;
+      voicePlayDebugWav?: () => Promise<{
+        ok: boolean;
+        error?: string;
+        debugWavPath?: string;
+        audioBytes?: number;
+        playPromiseResolved?: boolean;
+        playErrorName?: string | null;
+        playErrorMessage?: string | null;
+        events?: string | null;
+        speakingEntered?: boolean;
+        webContentsAudioMuted?: boolean | null;
+        voiceLogPath?: string;
+      }>;
+      voiceCancelPtt?: () => Promise<{ ok: boolean }>;
+      onVoicePtt?: (
+        callback: (payload: { phase: "start" | "stop" | "cancel" }) => void,
+      ) => () => void;
+      onOverlayFocusInput?: (callback: () => void) => () => void;
+      getOverlayTurnState?: () => Promise<{
+        reply?: string;
+        warning?: string | null;
+        error?: string | null;
+        activity?: string | null;
+        status?: string;
+        pendingApproval?: unknown;
+      } | null>;
+      patchOverlayTurn?: (patch: Record<string, unknown>) => Promise<unknown>;
       decideOverlayApproval?: (
         approvalId: string,
         decision: "approve" | "reject",

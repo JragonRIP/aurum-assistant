@@ -239,6 +239,39 @@ const aurumDesktop = {
     };
   },
 
+  onVoiceTestPlay: (
+    callback: (payload: {
+      audioBase64: string;
+      mimeType: string;
+      purpose?: string;
+    }) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { audioBase64: string; mimeType: string; purpose?: string },
+    ): void => {
+      callback(payload);
+    };
+    ipcRenderer.on("aurum:voice-test-play", listener);
+    return () => {
+      ipcRenderer.removeListener("aurum:voice-test-play", listener);
+    };
+  },
+
+  voiceTestPlayResult: (payload: {
+    ok: boolean;
+    playPromiseResolved?: boolean;
+    playErrorName?: string | null;
+    playErrorMessage?: string | null;
+    audioVolume?: number | null;
+    audioMuted?: boolean | null;
+    speakingEntered?: boolean;
+    events?: string | null;
+    objectUrlCreated?: boolean;
+  }): void => {
+    ipcRenderer.send("aurum:voice-test-play-result", payload);
+  },
+
   onOverlayFocusInput: (callback: () => void): (() => void) => {
     const listener = (): void => {
       callback();
@@ -263,6 +296,9 @@ const aurumDesktop = {
   voiceSynthesize: (opts: {
     text: string;
     voice?: string;
+    bypassSpokenMode?: boolean;
+    debugDumpWav?: boolean;
+    purpose?: string;
   }): Promise<{
     ok: boolean;
     audioBase64?: string;
@@ -271,7 +307,81 @@ const aurumDesktop = {
     error?: string;
     code?: string;
     latencyMs?: number;
+    skipped?: boolean;
+    spokenMode?: string | null;
+    voiceEnabled?: boolean | null;
+    debugWavPath?: string | null;
+    audioBytes?: number;
+    httpStatus?: number;
+    wavInfo?: {
+      ok: boolean;
+      sampleRate?: number;
+      numChannels?: number;
+      bitsPerSample?: number;
+      nonzeroSamples?: number;
+      durationMsApprox?: number;
+      error?: string;
+    } | null;
   }> => ipcRenderer.invoke("aurum:voice-synthesize", opts),
+
+  voiceLog: (opts: {
+    stage: string;
+    fields?: Record<string, string | number | boolean | null>;
+  }): Promise<{ ok: boolean; path?: string }> =>
+    ipcRenderer.invoke("aurum:voice-log", opts),
+
+  voiceTest: (opts?: {
+    text?: string;
+    voice?: string;
+  }): Promise<{
+    ok: boolean;
+    audioBase64?: string;
+    mimeType?: string;
+    speechText?: string;
+    error?: string;
+    code?: string;
+    skipped?: boolean;
+    debugWavPath?: string | null;
+    audioBytes?: number;
+    httpStatus?: number;
+    voiceLogPath?: string;
+    wavInfo?: {
+      ok: boolean;
+      sampleRate?: number;
+      numChannels?: number;
+      bitsPerSample?: number;
+      nonzeroSamples?: number;
+    } | null;
+    playbackAttempted?: boolean;
+    playPromiseResolved?: boolean;
+    playErrorName?: string | null;
+    playErrorMessage?: string | null;
+    speakingEntered?: boolean;
+    objectUrlCreated?: boolean;
+    events?: string | null;
+    webContentsAudioMuted?: boolean | null;
+    masterVolume?: number | null;
+    masterMuted?: boolean | null;
+  }> => ipcRenderer.invoke("aurum:voice-test", opts ?? {}),
+
+  voicePlayDebugWav: (): Promise<{
+    ok: boolean;
+    error?: string;
+    debugWavPath?: string;
+    audioBytes?: number;
+    playPromiseResolved?: boolean;
+    playErrorName?: string | null;
+    playErrorMessage?: string | null;
+    events?: string | null;
+    speakingEntered?: boolean;
+    webContentsAudioMuted?: boolean | null;
+    voiceLogPath?: string;
+  }> => ipcRenderer.invoke("aurum:voice-play-debug-wav"),
+
+  voiceDebugFlags: (opts?: {
+    bypassSpokenMode?: boolean;
+  }): Promise<{ ok: boolean; bypassSpokenMode?: boolean }> =>
+    ipcRenderer.invoke("aurum:voice-debug-flags", opts ?? {}),
 
   voiceCancelPtt: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:voice-cancel-ptt"),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_VOICE_SETTINGS,
   VOICE_SPOKEN_MODE,
@@ -8,13 +8,53 @@ import {
   type VoiceSpokenMode,
 } from "@aurum/shared";
 
+/** Match desktop VoicePlayback L16 → WAV conversion for web Test Voice. */
+function pcmToWav(pcm: Uint8Array, sampleRate: number): ArrayBuffer {
+  const dataSize = pcm.byteLength - (pcm.byteLength % 2);
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const write = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  write(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  write(8, "WAVE");
+  write(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  write(36, "data");
+  view.setUint32(40, dataSize, true);
+  new Uint8Array(buffer, 44).set(pcm.subarray(0, dataSize));
+  return buffer;
+}
+
+function toPlayableBlob(audioBase64: string, mimeType: string): Blob {
+  const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
+  const mime = mimeType.toLowerCase();
+  if (mime.includes("l16") || mime.includes("pcm")) {
+    const rateMatch = /rate=(\d+)/i.exec(mimeType);
+    const rate = rateMatch ? Number(rateMatch[1]) : 24000;
+    return new Blob([pcmToWav(bytes, rate)], { type: "audio/wav" });
+  }
+  return new Blob([bytes], { type: mimeType.split(";")[0] || "audio/wav" });
+}
+
 export function VoiceSettingsPanel() {
   const [settings, setSettings] = useState<VoiceSettings>(DEFAULT_VOICE_SETTINGS);
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "synthesizing" | "speaking" | "done" | "error">(
+    "idle",
+  );
   const [message, setMessage] = useState<string | null>(null);
   const [devices, setDevices] = useState<Array<{ deviceId: string; label: string }>>(
     [],
   );
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -70,12 +110,83 @@ export function VoiceSettingsPanel() {
   async function testVoice() {
     setBusy(true);
     setMessage(null);
+    setPhase("synthesizing");
     try {
+      // Prefer desktop IPC when running inside Aurum Console (same synth + VoicePlayback path).
+      const desktop = (
+        window as unknown as {
+          aurumDesktop?: {
+            voiceTest?: (opts?: {
+              text?: string;
+              voice?: string;
+            }) => Promise<{
+              ok: boolean;
+              audioBase64?: string;
+              mimeType?: string;
+              error?: string;
+              httpStatus?: number;
+              audioBytes?: number;
+              debugWavPath?: string | null;
+              voiceLogPath?: string;
+              wavInfo?: { ok?: boolean; sampleRate?: number } | null;
+              playbackAttempted?: boolean;
+              playPromiseResolved?: boolean;
+              playErrorName?: string | null;
+              playErrorMessage?: string | null;
+              speakingEntered?: boolean;
+              objectUrlCreated?: boolean;
+              events?: string | null;
+              webContentsAudioMuted?: boolean | null;
+              masterVolume?: number | null;
+              masterMuted?: boolean | null;
+            }>;
+            voicePlayDebugWav?: () => Promise<{
+              ok: boolean;
+              error?: string;
+              playPromiseResolved?: boolean;
+              playErrorMessage?: string | null;
+              events?: string | null;
+              webContentsAudioMuted?: boolean | null;
+              audioBytes?: number;
+              debugWavPath?: string;
+            }>;
+            voiceDebugFlags?: (opts?: {
+              bypassSpokenMode?: boolean;
+            }) => Promise<{ ok: boolean; bypassSpokenMode?: boolean }>;
+          };
+        }
+      ).aurumDesktop;
+
+      if (desktop?.voiceTest) {
+        const res = await desktop.voiceTest({
+          text: "Aurum voice test.",
+          voice: settings.ttsVoice || "Kore",
+        });
+        const detail = `HTTP ${res.httpStatus ?? "?"} · ${res.audioBytes ?? 0}B · play ${res.playPromiseResolved ? "ok" : "fail"} · URL ${res.objectUrlCreated ? "yes" : "no"} · events ${res.events ?? "none"} · mutedWC ${res.webContentsAudioMuted ?? "?"} · SPEAKING ${res.speakingEntered ? "yes" : "no"}`;
+        if (!res.ok) {
+          setPhase("error");
+          setMessage(
+            `${res.playErrorMessage || res.error || "Voice playback unavailable."} ${detail}`,
+          );
+          setBusy(false);
+          return;
+        }
+        setPhase("speaking");
+        setMessage(`Speaking via overlay VoicePlayback… ${detail}`);
+        // Overlay owns playback; settle UI after a short SPEAKING flash.
+        window.setTimeout(() => {
+          setPhase("done");
+          setMessage(`Done. ${detail}`);
+          setBusy(false);
+        }, 2500);
+        return;
+      }
+
       const res = await fetch("/api/voice/synthesize", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          text: "Aurum is ready.",
+          text: "Aurum voice test.",
           voice: settings.ttsVoice,
         }),
       });
@@ -87,18 +198,40 @@ export function VoiceSettingsPanel() {
       if (!res.ok || !json.audioBase64) {
         throw new Error(json.error || "Voice playback unavailable.");
       }
-      const bytes = Uint8Array.from(atob(json.audioBase64), (c) => c.charCodeAt(0));
-      const blob = new Blob([bytes], {
-        type: (json.mimeType || "audio/wav").split(";")[0],
-      });
+
+      setPhase("speaking");
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+        } catch {
+          // ignore
+        }
+      }
+      const blob = toPlayableBlob(json.audioBase64, json.mimeType || "audio/wav");
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
+      audio.volume = 1;
+      audio.muted = false;
+      audioRef.current = audio;
       await audio.play();
-      audio.onended = () => URL.revokeObjectURL(url);
-      setMessage("Playing test voice.");
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setPhase("done");
+        setMessage(`Done. Web synth HTTP ${res.status}`);
+        setBusy(false);
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setPhase("error");
+        setMessage(`Playback error. Web synth HTTP ${res.status}`);
+        setBusy(false);
+      };
+      setMessage(`Speaking… Web synth HTTP ${res.status}`);
     } catch (err) {
+      setPhase("error");
       setMessage(err instanceof Error ? err.message : "Test failed");
-    } finally {
       setBusy(false);
     }
   }
@@ -192,7 +325,86 @@ export function VoiceSettingsPanel() {
           onClick={() => void testVoice()}
           className="aurum-focus-ring text-[13px] text-[var(--aurum-text)]"
         >
-          Test voice
+          {phase === "synthesizing"
+            ? "Synthesizing…"
+            : phase === "speaking"
+              ? "SPEAKING…"
+              : "Test voice"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            const desktop = (
+              window as unknown as {
+                aurumDesktop?: {
+                  voicePlayDebugWav?: () => Promise<{
+                    ok: boolean;
+                    error?: string;
+                    playPromiseResolved?: boolean;
+                    playErrorMessage?: string | null;
+                    events?: string | null;
+                    webContentsAudioMuted?: boolean | null;
+                    audioBytes?: number;
+                  }>;
+                };
+              }
+            ).aurumDesktop;
+            if (!desktop?.voicePlayDebugWav) {
+              setMessage("Play debug WAV is available in Aurum Console only.");
+              return;
+            }
+            setBusy(true);
+            setPhase("speaking");
+            void desktop.voicePlayDebugWav().then((r) => {
+              setBusy(false);
+              if (!r.ok) {
+                setPhase("error");
+                setMessage(
+                  r.playErrorMessage ||
+                    r.error ||
+                    "Debug WAV playback failed.",
+                );
+                return;
+              }
+              setPhase("done");
+              setMessage(
+                `Debug WAV played via VoicePlayback · ${r.audioBytes ?? 0}B · play ${r.playPromiseResolved ? "ok" : "fail"} · events ${r.events ?? "none"} · mutedWC ${r.webContentsAudioMuted ?? "?"}`,
+              );
+            });
+          }}
+          className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)]"
+        >
+          Play debug WAV
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            const desktop = (
+              window as unknown as {
+                aurumDesktop?: {
+                  voiceDebugFlags?: (opts?: {
+                    bypassSpokenMode?: boolean;
+                  }) => Promise<{ ok: boolean; bypassSpokenMode?: boolean }>;
+                };
+              }
+            ).aurumDesktop;
+            if (!desktop?.voiceDebugFlags) {
+              setMessage("Debug bypass is available in Aurum Console only.");
+              return;
+            }
+            void desktop.voiceDebugFlags({ bypassSpokenMode: true }).then((r) => {
+              setMessage(
+                r.ok
+                  ? "Temporary: PTT TTS will bypass spoken_mode until Console restart (settings unchanged)."
+                  : "Could not set debug flag.",
+              );
+            });
+          }}
+          className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)]"
+        >
+          Debug: bypass spoken_mode
         </button>
         {message ? (
           <span className="text-[13px] text-[var(--aurum-text-muted)]">
@@ -200,6 +412,17 @@ export function VoiceSettingsPanel() {
           </span>
         ) : null}
       </div>
+      <p className="text-[12px] text-[var(--aurum-text-dim)]">
+        Temporary diagnostics: Console writes{" "}
+        <code className="text-[var(--aurum-text-muted)]">
+          %APPDATA%\aurum\logs\voice.log
+        </code>{" "}
+        and may save{" "}
+        <code className="text-[var(--aurum-text-muted)]">
+          %TEMP%\aurum-tts-debug.wav
+        </code>
+        .
+      </p>
     </div>
   );
 }

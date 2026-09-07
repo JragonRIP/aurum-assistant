@@ -20,6 +20,9 @@ app.commandLine.appendSwitch(
   "autoplay-policy",
   "no-user-gesture-required",
 );
+// Keep overlay TTS audible if the window loses focus / is briefly hidden.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
 import { DeviceBridge } from "./bridge";
 import { getAurumWebUrl, loadDesktopEnv } from "./config";
 import {
@@ -33,6 +36,8 @@ import { VoiceBridge } from "./voice-bridge";
 import { VoiceHotkeyController } from "./voice-hotkey";
 import { installMediaPermissionHandlers } from "./voice-permissions";
 import { authenticatedDeviceFetch } from "./authenticated-device-fetch";
+import { appendVoiceLog, voiceLogFilePath, debugWavPath } from "./voice-log";
+import { getMasterAudioState } from "./windows-audio";
 import {
   AURUM_AUTOSTART_FLAG,
   mainWindowConversationUrl,
@@ -275,12 +280,19 @@ function createOverlayWindow(): BrowserWindow {
       sandbox: true,
       // Overlay is a trusted local file:// surface; allow post-PTT TTS without a click.
       autoplayPolicy: "no-user-gesture-required",
+      backgroundThrottling: false,
     },
   });
 
   // Stay visible above normal apps without stealing permanent focus ownership.
   // Clicking another app may blur Aurum; do not hide or remount on blur.
   win.setAlwaysOnTop(true, "screen-saver");
+  win.webContents.setBackgroundThrottling(false);
+  try {
+    win.webContents.setAudioMuted(false);
+  } catch {
+    // ignore
+  }
   win.on("blur", () => {
     if (!win.isDestroyed() && win.isVisible()) {
       win.setAlwaysOnTop(true, "screen-saver");
@@ -290,6 +302,34 @@ function createOverlayWindow(): BrowserWindow {
   positionOverlay(win, idle);
   void win.loadFile(path.join(__dirname, "../renderer/index.html"));
   return win;
+}
+
+function ensureOverlayAudioReady(): {
+  audioMuted: boolean | null;
+} {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return { audioMuted: null };
+  }
+  try {
+    overlayWindow.webContents.setBackgroundThrottling(false);
+  } catch {
+    // ignore
+  }
+  try {
+    overlayWindow.webContents.setAudioMuted(false);
+  } catch {
+    // ignore
+  }
+  let audioMuted: boolean | null = null;
+  try {
+    audioMuted = overlayWindow.webContents.isAudioMuted();
+  } catch {
+    audioMuted = null;
+  }
+  appendVoiceLog("overlay_audio", {
+    webcontents_audio_muted: audioMuted,
+  });
+  return { audioMuted };
 }
 
 function showOverlay(): void {
@@ -302,6 +342,7 @@ function showOverlay(): void {
   }
   positionOverlay(overlayWindow, currentOverlaySize());
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  ensureOverlayAudioReady();
   overlayWindow.show();
   overlayWindow.focus();
   overlayWindow.webContents.send("aurum:overlay-shown", {
@@ -708,17 +749,318 @@ function registerIpc(): void {
     });
   });
 
+  ipcMain.handle("aurum:voice-log", (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        stage: z.string().min(1).max(80),
+        fields: z
+          .record(z.union([z.string(), z.number(), z.boolean(), z.null()]))
+          .optional(),
+      })
+      .safeParse(raw);
+    if (!parsed.success) return { ok: false };
+    appendVoiceLog(parsed.data.stage, parsed.data.fields ?? {});
+    return { ok: true, path: voiceLogFilePath() };
+  });
+
+  /** In-memory diagnostic: force synthesize bypass of spoken_mode (PTT path). */
+  let voiceDebugBypassSpokenMode = false;
+
+  ipcMain.handle("aurum:voice-debug-flags", (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        bypassSpokenMode: z.boolean().optional(),
+      })
+      .safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false };
+    if (typeof parsed.data.bypassSpokenMode === "boolean") {
+      voiceDebugBypassSpokenMode = parsed.data.bypassSpokenMode;
+    }
+    appendVoiceLog("debug_flags", {
+      bypassSpokenMode: voiceDebugBypassSpokenMode,
+    });
+    return { ok: true, bypassSpokenMode: voiceDebugBypassSpokenMode };
+  });
+
   ipcMain.handle("aurum:voice-synthesize", async (_event, raw: unknown) => {
     const parsed = z
       .object({
         text: z.string().min(1).max(4000),
         voice: z.string().min(1).max(64).optional(),
+        bypassSpokenMode: z.boolean().optional(),
+        debugDumpWav: z.boolean().optional(),
+        purpose: z.string().max(40).optional(),
       })
       .safeParse(raw);
     if (!parsed.success) {
       return { ok: false, error: "Invalid text", code: "VALIDATION_ERROR" };
     }
-    return ensureVoiceBridge().synthesize(parsed.data);
+    return ensureVoiceBridge().synthesize({
+      ...parsed.data,
+      bypassSpokenMode:
+        parsed.data.bypassSpokenMode === true || voiceDebugBypassSpokenMode,
+    });
+  });
+
+  ipcMain.handle("aurum:voice-test", async (_event, raw: unknown) => {
+    const parsed = z
+      .object({
+        text: z.string().min(1).max(200).optional(),
+        voice: z.string().min(1).max(64).optional(),
+      })
+      .safeParse(raw ?? {});
+    if (!parsed.success) {
+      return { ok: false, error: "Invalid test request", code: "VALIDATION_ERROR" };
+    }
+
+    let masterVolume: number | null = null;
+    let masterMuted: boolean | null = null;
+    try {
+      const master = await getMasterAudioState();
+      masterVolume = master.volume;
+      masterMuted = master.muted;
+    } catch {
+      // safe diagnostic only — ignore if loudness unavailable
+    }
+
+    appendVoiceLog("test_voice_start", {
+      voice_origin: false,
+      bypassSpokenMode: true,
+      master_volume: masterVolume,
+      master_muted: masterMuted,
+    });
+    const result = await ensureVoiceBridge().synthesize({
+      text: parsed.data.text?.trim() || "Aurum voice test.",
+      voice: parsed.data.voice || "Kore",
+      bypassSpokenMode: true,
+      debugDumpWav: true,
+      purpose: "test_voice",
+    });
+    appendVoiceLog("test_voice_synth_done", {
+      ok: result.ok,
+      skipped: Boolean(result.skipped),
+      synth_status: result.httpStatus ?? null,
+      audio_bytes: result.audioBytes ?? 0,
+      audio_mime: (result.mimeType ?? "").split(";")[0] || null,
+      wav_ok: result.wavInfo?.ok ?? null,
+      debug_wav: result.debugWavPath ?? null,
+      voice_log: voiceLogFilePath(),
+      master_volume: masterVolume,
+      master_muted: masterMuted,
+    });
+
+    if (!result.ok || !result.audioBase64 || result.skipped) {
+      return {
+        ...result,
+        voiceLogPath: voiceLogFilePath(),
+        playbackAttempted: false,
+        masterVolume,
+        masterMuted,
+      };
+    }
+
+    // Play through the overlay VoicePlayback path (same as PTT TTS).
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      overlayWindow = createOverlayWindow();
+    }
+    showOverlay();
+    const { audioMuted: webContentsMuted } = ensureOverlayAudioReady();
+    if (overlayWindow.webContents.isLoading()) {
+      await new Promise<void>((resolve) => {
+        overlayWindow?.webContents.once("did-finish-load", () => resolve());
+        setTimeout(() => resolve(), 8_000);
+      });
+    }
+    // Let OverlayApp mount onVoiceTestPlay listener.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const playResult = await new Promise<{
+      ok: boolean;
+      playPromiseResolved?: boolean;
+      playErrorName?: string | null;
+      playErrorMessage?: string | null;
+      audioVolume?: number | null;
+      audioMuted?: boolean | null;
+      speakingEntered?: boolean | null;
+      events?: string | null;
+      objectUrlCreated?: boolean | null;
+    }>((resolve) => {
+      const timeout = setTimeout(() => {
+        ipcMain.removeListener("aurum:voice-test-play-result", onResult);
+        resolve({
+          ok: false,
+          playPromiseResolved: false,
+          playErrorMessage: "overlay_play_timeout",
+        });
+      }, 20_000);
+
+      function onResult(
+        _e: Electron.IpcMainEvent,
+        payload: {
+          ok?: boolean;
+          playPromiseResolved?: boolean;
+          playErrorName?: string | null;
+          playErrorMessage?: string | null;
+          audioVolume?: number | null;
+          audioMuted?: boolean | null;
+          speakingEntered?: boolean | null;
+          events?: string | null;
+          objectUrlCreated?: boolean | null;
+        },
+      ) {
+        clearTimeout(timeout);
+        ipcMain.removeListener("aurum:voice-test-play-result", onResult);
+        resolve({
+          ok: Boolean(payload?.ok),
+          playPromiseResolved: payload?.playPromiseResolved,
+          playErrorName: payload?.playErrorName ?? null,
+          playErrorMessage: payload?.playErrorMessage ?? null,
+          audioVolume: payload?.audioVolume ?? null,
+          audioMuted: payload?.audioMuted ?? null,
+          speakingEntered: payload?.speakingEntered ?? null,
+          events: payload?.events ?? null,
+          objectUrlCreated: payload?.objectUrlCreated ?? null,
+        });
+      }
+
+      ipcMain.on("aurum:voice-test-play-result", onResult);
+      overlayWindow?.webContents.send("aurum:voice-test-play", {
+        audioBase64: result.audioBase64,
+        mimeType: result.mimeType || "audio/wav",
+        purpose: "test_voice",
+      });
+    });
+
+    appendVoiceLog("test_voice_playback", {
+      playback_attempted: true,
+      play_promise_resolved: playResult.playPromiseResolved ?? false,
+      play_error_name: playResult.playErrorName ?? null,
+      play_error_message: playResult.playErrorMessage ?? null,
+      audio_volume: playResult.audioVolume ?? null,
+      audio_muted: playResult.audioMuted ?? null,
+      speaking_entered: playResult.speakingEntered ?? false,
+      object_url_created: playResult.objectUrlCreated ?? null,
+      events: playResult.events ?? null,
+      webcontents_audio_muted: webContentsMuted,
+      master_volume: masterVolume,
+      master_muted: masterMuted,
+    });
+
+    return {
+      ...result,
+      ok: result.ok && playResult.ok,
+      voiceLogPath: voiceLogFilePath(),
+      playbackAttempted: true,
+      playPromiseResolved: playResult.playPromiseResolved ?? false,
+      playErrorName: playResult.playErrorName ?? null,
+      playErrorMessage: playResult.playErrorMessage ?? null,
+      speakingEntered: playResult.speakingEntered ?? false,
+      objectUrlCreated: playResult.objectUrlCreated ?? false,
+      events: playResult.events ?? null,
+      webContentsAudioMuted: webContentsMuted,
+      masterVolume,
+      masterMuted,
+    };
+  });
+
+  ipcMain.handle("aurum:voice-play-debug-wav", async () => {
+    const wavPath = debugWavPath();
+    if (!fs.existsSync(wavPath)) {
+      return {
+        ok: false,
+        error: "No debug WAV yet. Run Test Voice first.",
+        debugWavPath: wavPath,
+      };
+    }
+    const wav = fs.readFileSync(wavPath);
+    const audioBase64 = wav.toString("base64");
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      overlayWindow = createOverlayWindow();
+    }
+    showOverlay();
+    const { audioMuted: webContentsMuted } = ensureOverlayAudioReady();
+    if (overlayWindow.webContents.isLoading()) {
+      await new Promise<void>((resolve) => {
+        overlayWindow?.webContents.once("did-finish-load", () => resolve());
+        setTimeout(() => resolve(), 8_000);
+      });
+    }
+    await new Promise((r) => setTimeout(r, 200));
+
+    appendVoiceLog("debug_wav_play_start", {
+      bytes: wav.byteLength,
+      webcontents_audio_muted: webContentsMuted,
+    });
+
+    const playResult = await new Promise<{
+      ok: boolean;
+      playPromiseResolved?: boolean;
+      playErrorName?: string | null;
+      playErrorMessage?: string | null;
+      events?: string | null;
+      speakingEntered?: boolean | null;
+    }>((resolve) => {
+      const timeout = setTimeout(() => {
+        ipcMain.removeListener("aurum:voice-test-play-result", onResult);
+        resolve({
+          ok: false,
+          playPromiseResolved: false,
+          playErrorMessage: "overlay_play_timeout",
+        });
+      }, 20_000);
+
+      function onResult(
+        _e: Electron.IpcMainEvent,
+        payload: {
+          ok?: boolean;
+          playPromiseResolved?: boolean;
+          playErrorName?: string | null;
+          playErrorMessage?: string | null;
+          events?: string | null;
+          speakingEntered?: boolean | null;
+        },
+      ) {
+        clearTimeout(timeout);
+        ipcMain.removeListener("aurum:voice-test-play-result", onResult);
+        resolve({
+          ok: Boolean(payload?.ok),
+          playPromiseResolved: payload?.playPromiseResolved,
+          playErrorName: payload?.playErrorName ?? null,
+          playErrorMessage: payload?.playErrorMessage ?? null,
+          events: payload?.events ?? null,
+          speakingEntered: payload?.speakingEntered ?? null,
+        });
+      }
+
+      ipcMain.on("aurum:voice-test-play-result", onResult);
+      overlayWindow?.webContents.send("aurum:voice-test-play", {
+        audioBase64,
+        mimeType: "audio/wav",
+        purpose: "debug_wav",
+      });
+    });
+
+    appendVoiceLog("debug_wav_play_done", {
+      ok: playResult.ok,
+      play_promise_resolved: playResult.playPromiseResolved ?? false,
+      play_error_name: playResult.playErrorName ?? null,
+      play_error_message: playResult.playErrorMessage ?? null,
+      events: playResult.events ?? null,
+      webcontents_audio_muted: webContentsMuted,
+    });
+
+    return {
+      ok: playResult.ok,
+      debugWavPath: wavPath,
+      audioBytes: wav.byteLength,
+      playPromiseResolved: playResult.playPromiseResolved ?? false,
+      playErrorName: playResult.playErrorName ?? null,
+      playErrorMessage: playResult.playErrorMessage ?? null,
+      events: playResult.events ?? null,
+      speakingEntered: playResult.speakingEntered ?? false,
+      webContentsAudioMuted: webContentsMuted,
+      voiceLogPath: voiceLogFilePath(),
+    };
   });
 
   ipcMain.handle("aurum:voice-cancel-ptt", () => {

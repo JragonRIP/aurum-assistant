@@ -21,7 +21,7 @@ import {
   type OverlaySubmitRequest,
 } from "./overlay-submit";
 import { VoiceCaptureSession } from "./voice-capture";
-import { VoicePlayback } from "./voice-playback";
+import { getVoicePlayback } from "./voice-playback";
 
 /** Compact reply threshold — keep in sync with main/overlay-layout.ts */
 function shouldOfferShowFull(reply: string): boolean {
@@ -139,7 +139,7 @@ export function OverlayApp() {
   const [speaking, setSpeaking] = useState(false);
   const voiceOriginRef = useRef(false);
   const captureRef = useRef(new VoiceCaptureSession());
-  const playbackRef = useRef(new VoicePlayback());
+  const playbackRef = useRef(getVoicePlayback());
   const listeningRef = useRef(false);
   const pairedRef = useRef(false);
   const streamingRef = useRef(false);
@@ -840,31 +840,45 @@ export function OverlayApp() {
 
   async function speakFinalReply(text: string) {
     const origin = voiceOriginRef.current ? "voice" : "text";
-    console.info("[aurum:voice:tts]", {
-      stage: "eligibility",
-      origin,
-      finalResponseLen: text.trim().length,
-      // Server enforces spoken_mode; client always attempts for voice-origin.
-      clientEligible: origin === "voice" && text.trim().length > 0,
+    const finalReplyLen = text.trim().length;
+    const log = (stage: string, fields?: Record<string, string | number | boolean | null>) => {
+      console.info("[aurum:voice:tts]", { stage, ...fields });
+      void window.aurumDesktop.voiceLog?.({ stage, fields });
+    };
+
+    log("eligibility", {
+      voice_origin: origin === "voice",
+      final_reply_length: finalReplyLen,
+      eligible: origin === "voice" && finalReplyLen > 0,
     });
     if (origin !== "voice" || !text.trim()) return;
 
     try {
-      console.info("[aurum:voice:tts]", { stage: "synthesize_start" });
-      const res = await window.aurumDesktop.voiceSynthesize?.({ text });
-      console.info("[aurum:voice:tts]", {
-        stage: "synthesize_result",
-        ok: Boolean(res?.ok),
+      log("synth_request_started", {
+        synth_request_started: true,
+        speech_text_length: finalReplyLen,
+      });
+      const res = await window.aurumDesktop.voiceSynthesize?.({
+        text,
+        debugDumpWav: true,
+        purpose: "ptt_final",
+      });
+      log("synth_status", {
+        synth_status: res?.httpStatus ?? (res?.ok ? 200 : 0),
         skipped: Boolean((res as { skipped?: boolean } | undefined)?.skipped),
         code: res?.code ?? null,
-        speechTextLen: (res?.speechText ?? "").length,
-        mimeType: (res?.mimeType ?? "").split(";")[0] || null,
-        audioBytesApprox: res?.audioBase64
-          ? Math.floor(res.audioBase64.length * 0.75)
-          : 0,
+        spoken_mode: res?.spokenMode ?? null,
+        voice_enabled: res?.voiceEnabled ?? null,
+        speech_text_length: (res?.speechText ?? "").length,
+        audio_bytes: res?.audioBytes ?? 0,
+        audio_mime: (res?.mimeType ?? "").split(";")[0] || null,
+        wav_ok: res?.wavInfo?.ok ?? null,
+        wav_rate: res?.wavInfo?.sampleRate ?? null,
+        wav_channels: res?.wavInfo?.numChannels ?? null,
+        wav_bits: res?.wavInfo?.bitsPerSample ?? null,
+        debug_wav: res?.debugWavPath ?? null,
       });
       if (!res?.ok || !res.audioBase64) {
-        // skipped / tts_disabled / short_only: keep the visible text answer
         if (
           res?.error &&
           res.code !== "tts_disabled" &&
@@ -878,27 +892,28 @@ export function OverlayApp() {
       setSpeaking(true);
       setStatus("SPEAKING");
       setActivitySmooth(defaultPhaseActivity("speaking"));
-      console.info("[aurum:voice:tts]", {
-        stage: "playback_start",
-        speaking: true,
-      });
+      log("speaking_entered", { speaking_entered: true });
       const played = await playbackRef.current.playBase64(
         res.audioBase64,
         res.mimeType || "audio/wav",
         {
-          onEnded: () => {
-            console.info("[aurum:voice:tts]", {
-              stage: "playback_ended",
-              speaking: false,
+          onEvent: (event, fields) => {
+            log(`audio_${event}`, {
+              event,
+              ...(fields ?? {}),
             });
+          },
+          onEnded: () => {
+            log("ended", { speaking_entered: false, event: "ended" });
             setSpeaking(false);
             setActivitySmooth(null);
             setStatus("READY");
           },
           onError: (message) => {
-            console.warn("[aurum:voice:tts]", {
-              stage: "playback_error",
-              error: message.slice(0, 120),
+            log("error", {
+              speaking_entered: false,
+              event: "error",
+              play_error_message: message.slice(0, 120),
             });
             setSpeaking(false);
             setStatus("READY");
@@ -907,20 +922,30 @@ export function OverlayApp() {
           },
         },
       );
+      log("playback", {
+        playback_attempted: played.diag.playbackAttempted,
+        play_promise_resolved: played.diag.playPromiseResolved,
+        play_error_name: played.diag.playErrorName ?? null,
+        play_error_message: played.diag.playErrorMessage ?? null,
+        audio_volume: played.diag.audioVolume ?? null,
+        audio_muted: played.diag.audioMuted ?? null,
+        audio_bytes: played.diag.audioBytes ?? null,
+        blob_bytes: played.diag.blobBytes ?? null,
+        blob_mime: played.diag.blobMime ?? null,
+        object_url_created: played.diag.objectUrlCreated ?? null,
+        ready_state: played.diag.readyState ?? null,
+        network_state: played.diag.networkState ?? null,
+        events: played.diag.events ?? null,
+      });
       if (!played.ok) {
-        console.warn("[aurum:voice:tts]", {
-          stage: "playback_rejected",
-          error: (played.error ?? "unknown").slice(0, 120),
-        });
         setSpeaking(false);
         setStatus("READY");
         setActivitySmooth("Voice playback unavailable.");
         window.setTimeout(() => setActivitySmooth(null), 2200);
       }
     } catch (err) {
-      console.warn("[aurum:voice:tts]", {
-        stage: "synthesize_exception",
-        error:
+      log("synthesize_exception", {
+        play_error_message:
           err instanceof Error ? err.message.slice(0, 120) : "unknown",
       });
       setSpeaking(false);
@@ -928,6 +953,103 @@ export function OverlayApp() {
       window.setTimeout(() => setActivitySmooth(null), 2200);
     }
   }
+
+  useEffect(() => {
+    const unsub = window.aurumDesktop.onVoiceTestPlay?.(async (payload) => {
+      const purpose = payload.purpose || "test_voice";
+      const log = (
+        stage: string,
+        fields?: Record<string, string | number | boolean | null>,
+      ) => {
+        console.info("[aurum:voice:tts]", { stage, purpose, ...fields });
+        void window.aurumDesktop.voiceLog?.({
+          stage,
+          fields: { purpose, ...(fields ?? {}) },
+        });
+      };
+      log("test_voice_overlay_play", {
+        playback_attempted: true,
+        audio_mime: (payload.mimeType || "").split(";")[0] || null,
+        audio_bytes_b64_len: payload.audioBase64?.length ?? 0,
+      });
+      setSpeaking(true);
+      setStatus("SPEAKING");
+      setActivitySmooth(defaultPhaseActivity("speaking"));
+      log("speaking_entered", { speaking_entered: true });
+      try {
+        const played = await playbackRef.current.playBase64(
+          payload.audioBase64,
+          payload.mimeType || "audio/wav",
+          {
+            onEvent: (event, fields) => {
+              log(`audio_${event}`, { event, ...(fields ?? {}) });
+            },
+            onEnded: () => {
+              log("ended", { event: "ended" });
+              setSpeaking(false);
+              setActivitySmooth(null);
+              setStatus("READY");
+            },
+            onError: (message) => {
+              log("error", {
+                event: "error",
+                play_error_message: message.slice(0, 120),
+              });
+              setSpeaking(false);
+              setStatus("READY");
+              setActivitySmooth("Voice playback unavailable.");
+              window.setTimeout(() => setActivitySmooth(null), 2200);
+            },
+          },
+        );
+        log("playback", {
+          playback_attempted: played.diag.playbackAttempted,
+          play_promise_resolved: played.diag.playPromiseResolved,
+          play_error_name: played.diag.playErrorName ?? null,
+          play_error_message: played.diag.playErrorMessage ?? null,
+          audio_volume: played.diag.audioVolume ?? null,
+          audio_muted: played.diag.audioMuted ?? null,
+          audio_bytes: played.diag.audioBytes ?? null,
+          blob_bytes: played.diag.blobBytes ?? null,
+          blob_mime: played.diag.blobMime ?? null,
+          object_url_created: played.diag.objectUrlCreated ?? null,
+          ready_state: played.diag.readyState ?? null,
+          network_state: played.diag.networkState ?? null,
+          events: played.diag.events ?? null,
+        });
+        window.aurumDesktop.voiceTestPlayResult?.({
+          ok: played.ok,
+          playPromiseResolved: played.diag.playPromiseResolved,
+          playErrorName: played.diag.playErrorName ?? null,
+          playErrorMessage: played.diag.playErrorMessage ?? null,
+          audioVolume: played.diag.audioVolume ?? null,
+          audioMuted: played.diag.audioMuted ?? null,
+          speakingEntered: true,
+          events: played.diag.events ?? null,
+          objectUrlCreated: played.diag.objectUrlCreated ?? false,
+        });
+        if (!played.ok) {
+          setSpeaking(false);
+          setStatus("READY");
+        }
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message.slice(0, 120) : "unknown";
+        log("synthesize_exception", {
+          play_error_message: message,
+        });
+        window.aurumDesktop.voiceTestPlayResult?.({
+          ok: false,
+          playPromiseResolved: false,
+          playErrorMessage: message,
+          speakingEntered: false,
+        });
+        setSpeaking(false);
+        setStatus("READY");
+      }
+    });
+    return () => unsub?.();
+  }, [setActivitySmooth]);
 
   useEffect(() => {
     const unsubPtt = window.aurumDesktop.onVoicePtt?.(async (payload) => {

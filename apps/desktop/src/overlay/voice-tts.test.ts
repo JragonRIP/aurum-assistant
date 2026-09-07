@@ -8,7 +8,7 @@ import {
   SHORT_ONLY_MAX_CHARS,
   SHORT_ONLY_MAX_SENTENCES,
 } from "./voice-tts";
-import { pcmOrBlob } from "./voice-playback";
+import { pcmOrBlob } from "./wav-audio";
 
 const here = join(__dirname);
 
@@ -85,9 +85,9 @@ describe("OverlayApp TTS contracts", () => {
     assert.match(src, /replyRef\.current = next/);
     assert.match(src, /Do not gate on closed-over React `error`/);
     assert.match(src, /spokeForTurn/);
-    assert.match(src, /playback_rejected/);
+    assert.match(src, /play_promise_resolved/);
     assert.match(src, /origin:\s*opts\.origin/);
-    assert.match(src, /stage:\s*["']synthesize_start["']/);
+    assert.match(src, /log\(["']synth_request_started["']/);
   });
 
   it("awaits audio.play rejection handling via VoicePlayback", () => {
@@ -96,6 +96,7 @@ describe("OverlayApp TTS contracts", () => {
     assert.match(src, /NotAllowedError/);
     assert.match(src, /onError/);
     assert.match(src, /this\.audio = audio/);
+    assert.match(src, /getVoicePlayback/);
   });
 
   it("overlay enables autoplay without user gesture", () => {

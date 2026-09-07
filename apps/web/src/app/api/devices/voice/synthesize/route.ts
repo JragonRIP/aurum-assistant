@@ -35,6 +35,8 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as {
     text?: string;
     voice?: string;
+    /** Temporary diagnostic: skip spoken_mode / enabled gates for Test Voice. */
+    bypassSpokenMode?: boolean;
   } | null;
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text || text.length > 4000) {
@@ -42,44 +44,51 @@ export async function POST(request: Request) {
   }
 
   const settings = await getVoiceSettings(auth.supabase, auth.device.user_id);
-  if (!settings.enabled || settings.spokenMode === "never") {
-    return NextResponse.json(
-      {
-        error: "Spoken responses disabled.",
-        code: "tts_disabled",
-        skipped: true,
-      },
-      { status: 200 },
-    );
-  }
-
-  // Gate on the spoken candidate (buildSpeechResponse), not raw/tool payloads.
+  const bypass = body?.bypassSpokenMode === true;
   const speechCandidate = buildSpeechResponse(text);
-  if (
-    !shouldSpeakResponse({
-      inputMode: "voice",
-      spokenMode: settings.spokenMode,
-      speechText: speechCandidate,
-    })
-  ) {
-    console.info("[aurum:voice:tts:device]", {
-      stage: "skip",
-      code:
-        settings.spokenMode === "short_only"
-          ? "short_only_skip"
-          : "tts_skipped",
-      spokenMode: settings.spokenMode,
-      speechTextLen: speechCandidate.length,
-      deviceIdPrefix: auth.device.id.slice(0, 8),
-    });
-    return NextResponse.json({
-      skipped: true,
-      speechText: speechCandidate,
-      code:
-        settings.spokenMode === "short_only"
-          ? "short_only_skip"
-          : "tts_skipped",
-    });
+
+  if (!bypass) {
+    if (!settings.enabled || settings.spokenMode === "never") {
+      return NextResponse.json(
+        {
+          error: "Spoken responses disabled.",
+          code: "tts_disabled",
+          skipped: true,
+          spokenMode: settings.spokenMode,
+          voiceEnabled: settings.enabled,
+        },
+        { status: 200 },
+      );
+    }
+
+    if (
+      !shouldSpeakResponse({
+        inputMode: "voice",
+        spokenMode: settings.spokenMode,
+        speechText: speechCandidate,
+      })
+    ) {
+      console.info("[aurum:voice:tts:device]", {
+        stage: "skip",
+        code:
+          settings.spokenMode === "short_only"
+            ? "short_only_skip"
+            : "tts_skipped",
+        spokenMode: settings.spokenMode,
+        speechTextLen: speechCandidate.length,
+        deviceIdPrefix: auth.device.id.slice(0, 8),
+      });
+      return NextResponse.json({
+        skipped: true,
+        speechText: speechCandidate,
+        spokenMode: settings.spokenMode,
+        voiceEnabled: settings.enabled,
+        code:
+          settings.spokenMode === "short_only"
+            ? "short_only_skip"
+            : "tts_skipped",
+      });
+    }
   }
 
   const voice = body?.voice?.trim() || settings.ttsVoice;
@@ -95,6 +104,9 @@ export async function POST(request: Request) {
       mimeType: result.mimeType?.split(";")[0] ?? null,
       audioBytesApprox: Math.floor((result.audioBase64?.length ?? 0) * 0.75),
       speechTextLen: result.speechText.length,
+      bypassSpokenMode: bypass,
+      spokenMode: settings.spokenMode,
+      voiceEnabled: settings.enabled,
     });
     return NextResponse.json({
       audioBase64: result.audioBase64,
@@ -104,6 +116,9 @@ export async function POST(request: Request) {
       provider: result.provider,
       model: result.model,
       voice: result.voice,
+      spokenMode: settings.spokenMode,
+      voiceEnabled: settings.enabled,
+      bypassSpokenMode: bypass,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "TTS failed";

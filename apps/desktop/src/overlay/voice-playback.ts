@@ -1,16 +1,68 @@
 /**
  * Single-slot TTS playback for the overlay.
+ * Owns HTMLAudioElement independently of React render lifecycle.
  * New play() stops previous. Esc / new PTT should call stop().
- * Keeps HTMLAudioElement alive on `this` until ended / stop / barge-in.
+ * Object URL revoked only on ended / stop / barge-in / error — never right after play().
  */
+import { pcmOrBlob } from "./wav-audio";
+
+export type PlaybackDiag = {
+  playbackAttempted: boolean;
+  playPromiseResolved: boolean;
+  playErrorName?: string;
+  playErrorMessage?: string;
+  audioVolume?: number;
+  audioMuted?: boolean;
+  audioBytes?: number;
+  blobBytes?: number;
+  blobMime?: string;
+  objectUrlCreated?: boolean;
+  readyState?: number;
+  networkState?: number;
+  events?: string;
+};
+
+export type PlaybackEventName =
+  | "loadstart"
+  | "loadedmetadata"
+  | "loadeddata"
+  | "canplay"
+  | "playing"
+  | "ended"
+  | "error"
+  | "stalled"
+  | "abort"
+  | "play_called"
+  | "play_resolved"
+  | "play_rejected";
+
+export type PlaybackEventSink = (
+  event: PlaybackEventName,
+  fields?: Record<string, string | number | boolean | null>,
+) => void;
+
+/** Module singleton — survives OverlayApp remounts. */
+let sharedPlayback: VoicePlayback | null = null;
+
+export function getVoicePlayback(): VoicePlayback {
+  if (!sharedPlayback) sharedPlayback = new VoicePlayback();
+  return sharedPlayback;
+}
+
 export class VoicePlayback {
   private audio: HTMLAudioElement | null = null;
   private objectUrl: string | null = null;
   private playing = false;
   private generation = 0;
+  private mountedEl: HTMLAudioElement | null = null;
 
   isPlaying(): boolean {
     return this.playing;
+  }
+
+  /** Strong reference retained until stop/ended/error. */
+  getActiveAudio(): HTMLAudioElement | null {
+    return this.audio;
   }
 
   stop(): void {
@@ -19,12 +71,14 @@ export class VoicePlayback {
       try {
         this.audio.onended = null;
         this.audio.onerror = null;
+        this.detachMediaListeners(this.audio);
         this.audio.pause();
         this.audio.removeAttribute("src");
         this.audio.load();
       } catch {
         // ignore
       }
+      this.unmountAudioElement(this.audio);
       this.audio = null;
     }
     if (this.objectUrl) {
@@ -45,18 +99,62 @@ export class VoicePlayback {
       sinkId?: string | null;
       onEnded?: () => void;
       onError?: (message: string) => void;
+      onEvent?: PlaybackEventSink;
     },
-  ): Promise<{ ok: boolean; error?: string; audioBytes?: number }> {
+  ): Promise<{ ok: boolean; error?: string; audioBytes?: number; diag: PlaybackDiag }> {
+    const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
+    return this.playBytes(bytes, mimeType, opts);
+  }
+
+  async playBytes(
+    bytes: Uint8Array,
+    mimeType: string,
+    opts?: {
+      sinkId?: string | null;
+      onEnded?: () => void;
+      onError?: (message: string) => void;
+      onEvent?: PlaybackEventSink;
+    },
+  ): Promise<{ ok: boolean; error?: string; audioBytes?: number; diag: PlaybackDiag }> {
     this.stop();
     const gen = this.generation;
+    const emit: PlaybackEventSink = (event, fields) => {
+      opts?.onEvent?.(event, fields);
+    };
+    const events: PlaybackEventName[] = [];
+    const track = (event: PlaybackEventName, fields?: Record<string, string | number | boolean | null>) => {
+      events.push(event);
+      emit(event, fields);
+    };
+    const diag: PlaybackDiag = {
+      playbackAttempted: true,
+      playPromiseResolved: false,
+      audioBytes: bytes.byteLength,
+      objectUrlCreated: false,
+    };
     try {
-      const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
       const blob = pcmOrBlob(bytes, mimeType);
+      diag.blobBytes = blob.size;
+      diag.blobMime = blob.type || "audio/wav";
       this.objectUrl = URL.createObjectURL(blob);
+      diag.objectUrlCreated = true;
+
       const audio = new Audio();
       audio.preload = "auto";
+      audio.volume = 1;
+      audio.muted = false;
+      audio.playbackRate = 1;
+      // Keep element in the document — some Electron builds silent-play detached Audio.
+      this.mountAudioElement(audio);
       audio.src = this.objectUrl;
       this.audio = audio;
+      diag.audioVolume = audio.volume;
+      diag.audioMuted = audio.muted;
+      diag.readyState = audio.readyState;
+      diag.networkState = audio.networkState;
+
+      this.attachMediaListeners(audio, gen, track);
+
       if (opts?.sinkId && "setSinkId" in audio) {
         try {
           // @ts-expect-error setSinkId is Chromium-specific
@@ -65,10 +163,15 @@ export class VoicePlayback {
           // fall back to default output
         }
       }
+
       this.playing = true;
+
       audio.onended = () => {
         if (gen !== this.generation) return;
         this.playing = false;
+        track("ended");
+        diag.events = events.join(",");
+        // Revoke only after playback completes.
         this.stop();
         opts?.onEnded?.();
       };
@@ -76,74 +179,134 @@ export class VoicePlayback {
         if (gen !== this.generation) return;
         this.playing = false;
         const msg = "Audio element error";
+        track("error", { play_error_message: msg });
         this.stop();
         opts?.onError?.(msg);
       };
+
+      track("play_called", {
+        volume: audio.volume,
+        muted: audio.muted,
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        blobBytes: diag.blobBytes ?? null,
+        blobMime: diag.blobMime ?? null,
+      });
       try {
         await audio.play();
+        diag.playPromiseResolved = true;
+        track("play_resolved", {
+          volume: audio.volume,
+          muted: audio.muted,
+          readyState: audio.readyState,
+        });
       } catch (err) {
         if (gen !== this.generation) {
-          return { ok: false, error: "Playback superseded" };
+          diag.events = events.join(",");
+          return { ok: false, error: "Playback superseded", diag };
         }
         this.playing = false;
-        this.stop();
+        const name = err instanceof Error ? err.name : "Error";
         const message =
           err instanceof Error
             ? err.name === "NotAllowedError"
               ? "Autoplay blocked"
-              : err.message
+              : err.message.slice(0, 160)
             : "Playback failed";
+        diag.playErrorName = name;
+        diag.playErrorMessage = message;
+        track("play_rejected", {
+          play_error_name: name,
+          play_error_message: message,
+        });
+        this.stop();
         opts?.onError?.(message);
-        return { ok: false, error: message, audioBytes: bytes.byteLength };
+        diag.events = events.join(",");
+        return { ok: false, error: message, audioBytes: bytes.byteLength, diag };
       }
-      return { ok: true, audioBytes: bytes.byteLength };
+
+      diag.audioVolume = audio.volume;
+      diag.audioMuted = audio.muted;
+      diag.readyState = audio.readyState;
+      diag.networkState = audio.networkState;
+      diag.events = events.join(",");
+
+      return { ok: true, audioBytes: bytes.byteLength, diag };
     } catch (err) {
       this.stop();
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : "Playback failed",
+      const message = err instanceof Error ? err.message.slice(0, 160) : "Playback failed";
+      diag.playErrorMessage = message;
+      diag.playErrorName = err instanceof Error ? err.name : "Error";
+      diag.events = events.join(",");
+      return { ok: false, error: message, diag };
+    }
+  }
+
+  private mountAudioElement(audio: HTMLAudioElement): void {
+    try {
+      audio.setAttribute("data-aurum-voice-playback", "1");
+      audio.style.display = "none";
+      if (typeof document !== "undefined" && document.body) {
+        document.body.appendChild(audio);
+        this.mountedEl = audio;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private unmountAudioElement(audio: HTMLAudioElement): void {
+    try {
+      if (this.mountedEl === audio) this.mountedEl = null;
+      audio.remove();
+    } catch {
+      // ignore
+    }
+  }
+
+  private mediaCleanups = new WeakMap<HTMLAudioElement, () => void>();
+
+  private attachMediaListeners(
+    audio: HTMLAudioElement,
+    gen: number,
+    track: (event: PlaybackEventName, fields?: Record<string, string | number | boolean | null>) => void,
+  ): void {
+    const names: PlaybackEventName[] = [
+      "loadstart",
+      "loadedmetadata",
+      "loadeddata",
+      "canplay",
+      "playing",
+      "stalled",
+      "abort",
+    ];
+    const handlers: Array<[string, EventListener]> = names.map((name) => {
+      const handler: EventListener = () => {
+        if (gen !== this.generation) return;
+        track(name, {
+          readyState: audio.readyState,
+          networkState: audio.networkState,
+          volume: audio.volume,
+          muted: audio.muted,
+        });
       };
+      audio.addEventListener(name, handler);
+      return [name, handler];
+    });
+    this.mediaCleanups.set(audio, () => {
+      for (const [name, handler] of handlers) {
+        audio.removeEventListener(name, handler);
+      }
+    });
+  }
+
+  private detachMediaListeners(audio: HTMLAudioElement): void {
+    const cleanup = this.mediaCleanups.get(audio);
+    if (cleanup) {
+      cleanup();
+      this.mediaCleanups.delete(audio);
     }
   }
 }
 
-export function pcmOrBlob(bytes: Uint8Array, mimeType: string): Blob {
-  const mime = mimeType.toLowerCase();
-  if (mime.includes("l16") || mime.includes("pcm")) {
-    const rateMatch = /rate=(\d+)/i.exec(mimeType);
-    const rate = rateMatch ? Number(rateMatch[1]) : 24000;
-    return new Blob([pcmToWav(bytes, rate)], { type: "audio/wav" });
-  }
-  return new Blob([bytes], { type: mimeType.split(";")[0] || "audio/wav" });
-}
-
-function pcmToWav(pcm: Uint8Array, sampleRate: number): ArrayBuffer {
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = pcm.byteLength;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-  writeString(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(view, 8, "WAVE");
-  writeString(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitsPerSample, true);
-  writeString(view, 36, "data");
-  view.setUint32(40, dataSize, true);
-  new Uint8Array(buffer, 44).set(pcm);
-  return buffer;
-}
-
-function writeString(view: DataView, offset: number, str: string): void {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i));
-  }
-}
+export { pcmOrBlob } from "./wav-audio";
