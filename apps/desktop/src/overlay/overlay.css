@@ -229,8 +229,8 @@ body,
 }
 
 .overlay-reply {
-  color: var(--muted);
-  font-size: 14px;
+  color: var(--text);
+  font-size: 15px;
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -238,9 +238,12 @@ body,
 
 .overlay-warning {
   color: var(--dim);
-  font-size: 12px;
-  line-height: 1.4;
-  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  margin-top: 8px;
+  opacity: 0.88;
+  max-height: 3.2em;
+  overflow: hidden;
 }
 
 .overlay-shell.layout-full .overlay-reply {

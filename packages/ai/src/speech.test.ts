@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildSpeechResponse } from "./speech";
+import {
+  buildSpeechResponse,
+  speakClockTimes,
+} from "./speech";
 
 describe("buildSpeechResponse", () => {
   it("does not invent content", () => {
@@ -17,5 +20,24 @@ describe("buildSpeechResponse", () => {
       buildSpeechResponse("Yes. Production is healthy."),
       "Yes. Production is healthy.",
     );
+  });
+  it("strips markdown and does not read URLs", () => {
+    const out = buildSpeechResponse(
+      "See **Aurum launch** at https://example.com/path for details.",
+    );
+    assert.equal(out.includes("https"), false);
+    assert.match(out, /OR-um launch/);
+  });
+  it("speaks clock times naturally", () => {
+    assert.match(speakClockTimes("at 3:30 PM"), /three-thirty/i);
+    assert.match(speakClockTimes("at 4:00"), /four o'clock/i);
+  });
+  it("example meeting + task becomes speakable", () => {
+    const out = buildSpeechResponse(
+      "Your meeting is at 3:30 PM. I've also updated task **Aurum launch**.",
+    );
+    assert.match(out, /three-thirty/i);
+    assert.match(out, /OR-um launch/);
+    assert.equal(out.includes("**"), false);
   });
 });

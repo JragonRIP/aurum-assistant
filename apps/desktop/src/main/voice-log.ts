@@ -9,10 +9,19 @@ import { app } from "electron";
 
 const MAX_BYTES = 512 * 1024;
 
+export type VoiceLogChannel =
+  | "VOICE_TTS"
+  | "VOICE_PTT"
+  | "VOICE_LOCAL"
+  | "VOICE_PLAYBACK";
+
 export type VoiceDiagFields = Record<
   string,
   string | number | boolean | null | undefined
->;
+> & {
+  /** Overrides default VOICE_TTS channel prefix. */
+  channel?: VoiceLogChannel;
+};
 
 function logPath(): string {
   return path.join(app.getPath("userData"), "logs", "voice.log");
@@ -40,7 +49,7 @@ function rotateIfNeeded(): void {
   }
 }
 
-/** Append one VOICE_TTS diagnostic line. */
+/** Append one diagnostic line with an explicit channel prefix. */
 export function appendVoiceLog(
   stage: string,
   fields: VoiceDiagFields = {},
@@ -49,11 +58,13 @@ export function appendVoiceLog(
     ensureDir();
     rotateIfNeeded();
     const ts = new Date().toISOString();
-    const parts = Object.entries(fields)
+    const { channel, ...rest } = fields;
+    const prefix = channel ?? "VOICE_TTS";
+    const parts = Object.entries(rest)
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${k}=${v === null ? "null" : String(v)}`)
       .join(" ");
-    const line = `${ts} VOICE_TTS stage=${stage}${parts ? ` ${parts}` : ""}\n`;
+    const line = `${ts} ${prefix} stage=${stage}${parts ? ` ${parts}` : ""}\n`;
     fs.appendFileSync(logPath(), line, { encoding: "utf8" });
   } catch {
     // never throw into voice path

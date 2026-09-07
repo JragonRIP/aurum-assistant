@@ -33,6 +33,21 @@ import {
 } from "./credentials";
 import { OverlayChatBridge } from "./overlay-chat";
 import { VoiceBridge } from "./voice-bridge";
+import { getVoiceEngineManager } from "./tts/voice-engine-manager";
+import {
+  loadLocalTtsSettings,
+  saveLocalTtsSettings,
+} from "./tts/local-settings";
+import type { LocalTtsSettings } from "./tts/types";
+import {
+  playAudioViaOverlay,
+  runPhase51Validate,
+  phase51ReportPath,
+} from "./tts/phase51-validate";
+import {
+  runPhase52Validate,
+  phase52ReportPath,
+} from "./tts/phase52-validate";
 import { VoiceHotkeyController } from "./voice-hotkey";
 import { installMediaPermissionHandlers } from "./voice-permissions";
 import { authenticatedDeviceFetch } from "./authenticated-device-fetch";
@@ -830,8 +845,8 @@ function registerIpc(): void {
       master_muted: masterMuted,
     });
     const result = await ensureVoiceBridge().synthesize({
-      text: parsed.data.text?.trim() || "Aurum voice test.",
-      voice: parsed.data.voice || "Kore",
+      text: parsed.data.text?.trim() || "Aurum voice systems are online.",
+      voice: parsed.data.voice,
       bypassSpokenMode: true,
       debugDumpWav: true,
       purpose: "test_voice",
@@ -844,6 +859,8 @@ function registerIpc(): void {
       audio_mime: (result.mimeType ?? "").split(";")[0] || null,
       wav_ok: result.wavInfo?.ok ?? null,
       debug_wav: result.debugWavPath ?? null,
+      provider: result.provider ?? null,
+      cloud_tts_called: result.provider === "gemini",
       voice_log: voiceLogFilePath(),
       master_volume: masterVolume,
       master_muted: masterMuted,
@@ -1068,6 +1085,46 @@ function registerIpc(): void {
     return { ok: true };
   });
 
+  ipcMain.handle("aurum:local-tts-settings-get", () => {
+    return { ok: true, settings: loadLocalTtsSettings() };
+  });
+
+  ipcMain.handle("aurum:local-tts-settings-set", (_event, raw: unknown) => {
+    const patch =
+      raw && typeof raw === "object" ? (raw as Partial<LocalTtsSettings>) : {};
+    const settings = saveLocalTtsSettings(patch);
+    return { ok: true, settings };
+  });
+
+  ipcMain.handle("aurum:voice-engine-status", async () => {
+    const engine = getVoiceEngineManager();
+    let state = engine.getState();
+    // Cold start only — after a crash, surface Error until Restart Voice Engine.
+    if (state.status === "stopped") {
+      state = await engine.ensureStarted();
+    }
+    const health = await ensureVoiceBridge()
+      .getTtsService()
+      .getKokoro()
+      .healthCheck();
+    const voices =
+      health.available || health.ready || state.status === "loading_model"
+        ? await ensureVoiceBridge().getTtsService().getKokoro().getVoices()
+        : [];
+    return {
+      ok: true,
+      engine: engine.getState(),
+      health,
+      voices,
+      settings: loadLocalTtsSettings(),
+    };
+  });
+
+  ipcMain.handle("aurum:voice-engine-restart", async () => {
+    const state = await getVoiceEngineManager().restart();
+    return { ok: state.status === "ready", engine: state };
+  });
+
   ipcMain.handle("aurum:overlay-chat-cancel", (_event, raw: unknown) => {
     const parsed = z.object({ id: z.string().uuid() }).safeParse(raw);
     if (!parsed.success) return { ok: false };
@@ -1198,6 +1255,92 @@ app.whenReady().then(() => {
   registerHotkey();
   ensureBridge();
   desktopUpdater.start();
+  // Start local Kokoro voice engine in background (non-blocking).
+  void getVoiceEngineManager()
+    .ensureStarted()
+    .catch(() => {
+      /* status surfaces in Settings */
+    });
+
+  if (process.env.AURUM_PHASE52_VALIDATE === "1") {
+    void (async () => {
+      await new Promise((r) => setTimeout(r, 2500));
+      const report = await runPhase52Validate({
+        ensureVoiceBridge,
+        getOverlayWindow: () => overlayWindow,
+        showOverlay,
+        ensureOverlayAudioReady,
+        createOverlayWindow,
+      });
+      console.info("[aurum:phase52]", {
+        report: phase52ReportPath(),
+        errors: report.errors,
+        shortReply: report.shortReply,
+        multiSentence: report.multiSentence,
+        bargeIn: report.bargeIn,
+      });
+    })().catch((err) => {
+      console.error("[aurum:phase52] validate failed", err);
+    });
+  }
+
+  if (process.env.AURUM_PHASE51_VALIDATE === "1") {
+    void (async () => {
+      // Give overlay + engine a moment to mount without blocking UI.
+      await new Promise((r) => setTimeout(r, 2500));
+      const report = await runPhase51Validate({
+        getOverlayWindow: () => overlayWindow,
+        showOverlay,
+        ensureOverlayAudioReady,
+        createOverlayWindow,
+        ensureVoiceBridge,
+        startOverlayChat: (text, opts) =>
+          ensureOverlayChat().start(text, opts),
+        waitOverlayChatDone: async (id, timeoutMs = 90_000) => {
+          const started = Date.now();
+          while (Date.now() - started < timeoutMs) {
+            const snap = ensureOverlayChat().getTurnSnapshot();
+            const running = ensureOverlayChat().isRunning();
+            if (!running && snap.status !== "RUNNING") {
+              const finalText = (snap.reply || "").trim();
+              const failed =
+                snap.status === "FAILED" || snap.status === "CANCELLED";
+              return {
+                ok: !failed && finalText.length > 0,
+                finalLen: finalText.length,
+                finalText,
+                error: failed ? snap.status.toLowerCase() : undefined,
+              };
+            }
+            await new Promise((r) => setTimeout(r, 250));
+          }
+          const snap = ensureOverlayChat().getTurnSnapshot();
+          const finalText = (snap.reply || "").trim();
+          return {
+            ok: false,
+            finalLen: finalText.length,
+            finalText,
+            error: "agent_timeout",
+          };
+        },
+        playViaOverlay: (audioBase64, mimeType) =>
+          playAudioViaOverlay(
+            () => overlayWindow,
+            audioBase64,
+            mimeType,
+          ),
+      });
+      console.info("[aurum:phase51]", {
+        report: phase51ReportPath(),
+        errors: report.errors,
+        testVoice: report.testVoice,
+        voiceTurn: report.voiceTurn,
+        engine: report.engine,
+      });
+    })().catch((err) => {
+      console.error("[aurum:phase51] validate failed", err);
+    });
+  }
 
   const startupAction = resolveStartupWindowAction({
     argv: process.argv,
@@ -1220,6 +1363,7 @@ app.on("before-quit", () => {
   voiceHotkey = null;
   bridge?.stop();
   bridge = null;
+  void getVoiceEngineManager().stop();
 });
 
 app.on("will-quit", () => {
@@ -1228,6 +1372,7 @@ app.on("will-quit", () => {
   voiceHotkey = null;
   bridge?.stop();
   desktopUpdater?.stop();
+  void getVoiceEngineManager().stop();
 });
 
 app.on("window-all-closed", () => {

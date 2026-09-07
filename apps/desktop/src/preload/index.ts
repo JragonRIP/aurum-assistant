@@ -385,6 +385,59 @@ const aurumDesktop = {
 
   voiceCancelPtt: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("aurum:voice-cancel-ptt"),
+
+  localTtsSettingsGet: (): Promise<{
+    ok: boolean;
+    settings?: {
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+    };
+  }> => ipcRenderer.invoke("aurum:local-tts-settings-get"),
+
+  localTtsSettingsSet: (
+    patch: Partial<{
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+    }>,
+  ): Promise<{
+    ok: boolean;
+    settings?: {
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+    };
+  }> => ipcRenderer.invoke("aurum:local-tts-settings-set", patch),
+
+  voiceEngineStatus: (): Promise<{
+    ok: boolean;
+    engine?: {
+      status: string;
+      detail?: string | null;
+      modelLoadMs?: number | null;
+    };
+    health?: {
+      status: string;
+      ready: boolean;
+      detail?: string | null;
+    };
+    voices?: Array<{ id: string; label: string; lang?: string; gender?: string }>;
+    settings?: {
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+    };
+  }> => ipcRenderer.invoke("aurum:voice-engine-status"),
+
+  voiceEngineRestart: (): Promise<{
+    ok: boolean;
+    engine?: { status: string; detail?: string | null };
+  }> => ipcRenderer.invoke("aurum:voice-engine-restart"),
 };
 
 contextBridge.exposeInMainWorld("aurumDesktop", aurumDesktop);

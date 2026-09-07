@@ -1,0 +1,46 @@
+Aurum Voice Engine — Third-Party Notices
+========================================
+
+This product redistributes local speech components. Licenses summarized below.
+Full license texts are available from the upstream projects. Source for GPL
+components is offered as required by those licenses.
+
+----------------------------------------------------------------
+Kokoro (Python package) — Apache License 2.0
+Upstream: https://github.com/hexgrad/kokoro
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+Kokoro-82M model weights (hexgrad/Kokoro-82M) — Apache License 2.0
+Upstream: https://huggingface.co/hexgrad/Kokoro-82M
+Include Apache-2.0 NOTICE/attribution requirements for redistribution.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+Misaki (phonemizer companion) — Apache License 2.0
+Upstream: https://pypi.org/project/misaki/
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+espeak-ng (via espeakng-loader bundled DLL + data) — GPL-3.0
+Upstream: https://github.com/espeak-ng/espeak-ng
+Loader package: https://pypi.org/project/espeakng-loader/
+
+eSpeak NG is free software under the GNU General Public License v3.
+Aurum redistributes the binary/data as permitted by the GPL. Corresponding
+source for the bundled eSpeak NG build is available from the upstream project
+and, on request for the exact bundled revision, from Aurum support channels.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+PyTorch — BSD-style / Apache-2.0 (see PyTorch NOTICE)
+Upstream: https://github.com/pytorch/pytorch
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+NumPy — BSD-3-Clause (and other notices in NumPy distribution)
+soundfile — BSD-3-Clause
+----------------------------------------------------------------
+
+Aurum Console itself remains under its product license; these notices apply to
+bundled third-party speech runtime components only.

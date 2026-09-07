@@ -1,0 +1,9 @@
+# Aurum Voice Engine — local Kokoro-82M (development)
+# Create: python -m venv .venv
+# Install: .venv\Scripts\pip install -r requirements.txt
+# Requires: espeak-ng on PATH (Windows MSI from espeak-ng releases)
+
+kokoro>=0.9.4
+soundfile>=0.12.1
+misaki[en]>=0.9.0
+numpy>=1.24.0

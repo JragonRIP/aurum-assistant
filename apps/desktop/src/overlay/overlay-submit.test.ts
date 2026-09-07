@@ -72,11 +72,12 @@ describe("voice auto-submit contracts", () => {
     assert.match(src, /transcribingRef\.current\s*=\s*false/);
   });
 
-  it("voice origin survives to final TTS trigger", () => {
+  it("voice origin survives to streaming TTS trigger", () => {
     const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
     assert.match(src, /voiceOriginRef\.current\s*=\s*opts\.origin\s*===\s*["']voice["']/);
-    assert.match(src, /voiceOriginRef\.current && speech && !spokeForTurn/);
-    assert.match(src, /speakFinalReply/);
+    assert.match(src, /getStreamingTts\(\)\.beginTurn/);
+    assert.match(src, /getStreamingTts\(\)\.onAgentComplete/);
+    assert.match(src, /getStreamingTts\(\)\.onDelta/);
   });
 
   it("typed Enter still required — no auto-submit on command change alone", () => {

@@ -365,13 +365,18 @@ export async function runVerifiedPlayPauseMutation(
   if (before && before.isPlaying === wantPlaying) {
     return {
       success: true,
-      message: wantPlaying ? "Resumed Spotify." : "Paused Spotify.",
-      activityLabel: wantPlaying ? "Resumed Spotify" : "Paused Spotify",
+      message: wantPlaying
+        ? "Spotify is already playing."
+        : "Spotify is already paused.",
+      activityLabel: wantPlaying ? "Already playing" : "Already paused",
       data: {
         confirmation: "CONFIRMED" satisfies PlaybackMutationConfirmation,
         confirmed: true,
         isPlaying: before.isPlaying,
         alreadyInState: true,
+        accepted: true,
+        verified: true,
+        actualState: before.isPlaying ? "playing" : "paused",
       },
     };
   }
@@ -413,12 +418,16 @@ export async function runVerifiedPlayPauseMutation(
   if (verified.confirmed) {
     return {
       success: true,
-      message: wantPlaying ? "Resumed Spotify." : "Paused Spotify.",
+      message: wantPlaying ? "Spotify is playing." : "Spotify is paused.",
       activityLabel: wantPlaying ? "Resumed Spotify" : "Paused Spotify",
       data: {
         confirmation: "CONFIRMED" satisfies PlaybackMutationConfirmation,
         confirmed: true,
         isPlaying: verified.after?.isPlaying ?? wantPlaying,
+        accepted: true,
+        verified: true,
+        actualState:
+          (verified.after?.isPlaying ?? wantPlaying) ? "playing" : "paused",
       },
     };
   }
@@ -427,17 +436,22 @@ export async function runVerifiedPlayPauseMutation(
     success: false,
     error: {
       code: "PLAYBACK_CHANGE_NOT_CONFIRMED",
-      message:
-        deps.action === "pause"
-          ? "Spotify didn't confirm the pause."
-          : "Spotify didn't confirm resume.",
+      message: wantPlaying
+        ? "I sent the play command, but Spotify didn't confirm playback."
+        : "I sent the pause command, but Spotify didn't confirm it paused.",
     },
-    activityLabel:
-      deps.action === "pause" ? "Pause not confirmed" : "Resume not confirmed",
     data: {
       confirmation: "ACCEPTED_UNCONFIRMED" satisfies PlaybackMutationConfirmation,
       confirmed: false,
       isPlaying: verified.after?.isPlaying ?? null,
+      accepted: true,
+      verified: false,
+      actualState:
+        verified.after == null
+          ? "unknown"
+          : verified.after.isPlaying
+            ? "playing"
+            : "paused",
     },
   };
 }

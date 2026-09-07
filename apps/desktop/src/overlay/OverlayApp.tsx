@@ -22,6 +22,7 @@ import {
 } from "./overlay-submit";
 import { VoiceCaptureSession } from "./voice-capture";
 import { getVoicePlayback } from "./voice-playback";
+import { StreamingTtsController } from "./streaming-tts";
 
 /** Compact reply threshold — keep in sync with main/overlay-layout.ts */
 function shouldOfferShowFull(reply: string): boolean {
@@ -140,6 +141,7 @@ export function OverlayApp() {
   const voiceOriginRef = useRef(false);
   const captureRef = useRef(new VoiceCaptureSession());
   const playbackRef = useRef(getVoicePlayback());
+  const streamingTtsRef = useRef<StreamingTtsController | null>(null);
   const listeningRef = useRef(false);
   const pairedRef = useRef(false);
   const streamingRef = useRef(false);
@@ -177,7 +179,58 @@ export function OverlayApp() {
     setActivityLine(next);
   }, []);
 
-  /** Keep replyRef in sync immediately — useEffect alone races TTS on done. */
+  function getStreamingTts(): StreamingTtsController {
+    if (!streamingTtsRef.current) {
+      streamingTtsRef.current = new StreamingTtsController({
+        playback: playbackRef.current,
+        synthesize: async (opts) => {
+          const res = await window.aurumDesktop.voiceSynthesize?.({
+            text: opts.text,
+            purpose: opts.purpose,
+            bypassSpokenMode: opts.bypassSpokenMode,
+          });
+          return {
+            ok: Boolean(res?.ok),
+            audioBase64: res?.audioBase64,
+            mimeType: res?.mimeType,
+            skipped: Boolean((res as { skipped?: boolean } | undefined)?.skipped),
+            error: res?.error,
+            code: res?.code,
+            provider: res?.provider ?? null,
+            audioBytes: res?.audioBytes,
+            latencyMs: res?.latencyMs,
+          };
+        },
+        log: (stage, fields) => {
+          console.info("[aurum:voice:stream]", { stage, ...fields });
+          void window.aurumDesktop.voiceLog?.({
+            stage,
+            fields: fields as Record<
+              string,
+              string | number | boolean | null
+            >,
+          });
+        },
+        onSpeakingChange: (isSpeaking) => {
+          setSpeaking(isSpeaking);
+          if (isSpeaking) {
+            setStatus("SPEAKING");
+            setActivitySmooth(defaultPhaseActivity("speaking"));
+          } else if (!streamingRef.current) {
+            setStatus("READY");
+            setActivitySmooth(null);
+          }
+        },
+      });
+    }
+    return streamingTtsRef.current;
+  }
+
+  function cancelStreamingSpeech(): void {
+    streamingTtsRef.current?.cancel();
+    playbackRef.current.stop();
+    setSpeaking(false);
+  }
   const writeReply = useCallback((update: string | ((prev: string) => string)) => {
     setReply((prev) => {
       const next = typeof update === "function" ? update(prev) : update;
@@ -315,14 +368,12 @@ export function OverlayApp() {
         setActivitySmooth(null);
         setStatus("READY");
         void window.aurumDesktop.voiceCancelPtt?.();
-        playbackRef.current.stop();
-        setSpeaking(false);
+        cancelStreamingSpeech();
         return;
       }
       // Esc while SPEAKING: stop local TTS, then hide — do not cancel agent work
       if (speaking) {
-        playbackRef.current.stop();
-        setSpeaking(false);
+        cancelStreamingSpeech();
       }
       // Esc after submit / while streaming / approval: hide only — execution continues.
       // Esc never approves. Approval stays PENDING until explicit user action.
@@ -482,17 +533,19 @@ export function OverlayApp() {
           ? data.artists.filter((a): a is string => typeof a === "string")
           : [];
         if (title && event.tool?.includes("spotify")) {
+          const playingFromData =
+            typeof data.isPlaying === "boolean" ? data.isPlaying : undefined;
           setNowPlaying({
             title,
             artist: artists[0],
-            playing:
-              event.tool === "spotify_play_track" ||
-              event.tool === "spotify_resume",
+            playing: playingFromData,
           });
         }
         if (event.tool === "spotify_pause") {
+          const playingFromData =
+            typeof data.isPlaying === "boolean" ? data.isPlaying : false;
           setNowPlaying((prev) =>
-            prev ? { ...prev, playing: false } : prev,
+            prev ? { ...prev, playing: playingFromData } : prev,
           );
         }
         if (event.tool === "web_search" && Array.isArray(data.results)) {
@@ -568,7 +621,7 @@ export function OverlayApp() {
           setWarning(
             event.error?.message ??
               event.display?.detail ??
-              "Web search temporarily unavailable.",
+              "Couldn't reach web search.",
           );
         }
         return;
@@ -599,6 +652,9 @@ export function OverlayApp() {
       setActivitySmooth(null);
       writeReply((prev) => prev + event.text!);
       setExpanded(true);
+      if (voiceOriginRef.current) {
+        getStreamingTts().onDelta(event.text!);
+      }
       return;
     }
     if (event.type === "done") {
@@ -737,8 +793,7 @@ export function OverlayApp() {
     }
 
     voiceOriginRef.current = opts.origin === "voice";
-    playbackRef.current.stop();
-    setSpeaking(false);
+    cancelStreamingSpeech();
     setCommand("");
     writeReply("");
     setError(null);
@@ -757,6 +812,10 @@ export function OverlayApp() {
     setResearching(false);
     inFlightTools.current.clear();
 
+    if (opts.origin === "voice") {
+      getStreamingTts().beginTurn();
+    }
+
     const handle = await window.aurumDesktop.startOverlayChat(text, {
       origin: opts.origin,
     });
@@ -764,7 +823,7 @@ export function OverlayApp() {
       void window.aurumDesktop.cancelOverlayChat?.(handle.id);
     };
 
-    let spokeForTurn = false;
+    let streamSpeechStarted = opts.origin === "voice";
     const unsub = window.aurumDesktop.onOverlayChatEvent?.((payload) => {
       if (payload.id !== handle.id) return;
       if (payload.event) applyEvent(payload.event as StreamEvent);
@@ -778,28 +837,29 @@ export function OverlayApp() {
         if (awaitingApprovalRef.current) {
           setStatus("WAITING FOR APPROVAL");
           if (voiceOriginRef.current) {
+            cancelStreamingSpeech();
             void speakApprovalPrompt();
           }
         } else if (awaitingUserRef.current) {
           setStatus("NEED YOUR INPUT");
           setError(null);
+          cancelStreamingSpeech();
         } else if (payload.error) {
           setError(payload.error);
           setStatus("ERROR");
+          cancelStreamingSpeech();
         } else {
-          // Do not gate on closed-over React `error` state — it races and can
-          // skip TTS after any prior error even when this turn succeeded.
           setStatus("READY");
           const speech = replyRef.current.trim();
           console.info("[aurum:voice:tts]", {
             stage: "turn_complete",
             origin: voiceOriginRef.current ? "voice" : "text",
             finalResponseLen: speech.length,
-            willAttemptTts: Boolean(voiceOriginRef.current && speech && !spokeForTurn),
+            streamSpeechStarted,
           });
-          if (voiceOriginRef.current && speech && !spokeForTurn) {
-            spokeForTurn = true;
-            void speakFinalReply(speech);
+          if (voiceOriginRef.current && streamSpeechStarted) {
+            getStreamingTts().onAgentComplete();
+            streamSpeechStarted = false;
           }
         }
         unsub?.();
@@ -841,6 +901,7 @@ export function OverlayApp() {
   async function speakFinalReply(text: string) {
     const origin = voiceOriginRef.current ? "voice" : "text";
     const finalReplyLen = text.trim().length;
+    const finalTextAt = Date.now();
     const log = (stage: string, fields?: Record<string, string | number | boolean | null>) => {
       console.info("[aurum:voice:tts]", { stage, ...fields });
       void window.aurumDesktop.voiceLog?.({ stage, fields });
@@ -877,6 +938,8 @@ export function OverlayApp() {
         wav_channels: res?.wavInfo?.numChannels ?? null,
         wav_bits: res?.wavInfo?.bitsPerSample ?? null,
         debug_wav: res?.debugWavPath ?? null,
+        provider: res?.provider ?? null,
+        cloud_tts_called: res?.provider === "gemini",
       });
       if (!res?.ok || !res.audioBase64) {
         if (
@@ -893,6 +956,15 @@ export function OverlayApp() {
       setStatus("SPEAKING");
       setActivitySmooth(defaultPhaseActivity("speaking"));
       log("speaking_entered", { speaking_entered: true });
+      void window.aurumDesktop.voiceLog?.({
+        stage: "play_requested",
+        fields: {
+          channel: "VOICE_PLAYBACK",
+          provider: res.provider ?? null,
+          audio_bytes: res.audioBytes ?? 0,
+          final_text_to_play_request_ms: Date.now() - finalTextAt,
+        },
+      });
       const played = await playbackRef.current.playBase64(
         res.audioBase64,
         res.mimeType || "audio/wav",
@@ -902,6 +974,22 @@ export function OverlayApp() {
               event,
               ...(fields ?? {}),
             });
+            if (event === "playing" || event === "play_resolved") {
+              void window.aurumDesktop.voiceLog?.({
+                stage: event === "playing" ? "playing" : "play_resolved",
+                fields: {
+                  channel: "VOICE_PLAYBACK",
+                  final_text_to_playback_start_ms: Date.now() - finalTextAt,
+                  ...(fields ?? {}),
+                },
+              });
+            }
+            if (event === "ended") {
+              void window.aurumDesktop.voiceLog?.({
+                stage: "ended",
+                fields: { channel: "VOICE_PLAYBACK" },
+              });
+            }
           },
           onEnded: () => {
             log("ended", { speaking_entered: false, event: "ended" });
@@ -1064,9 +1152,20 @@ export function OverlayApp() {
         return;
       }
       if (payload.phase === "start") {
-        // Barge-in: stop speech when starting new PTT
-        playbackRef.current.stop();
-        setSpeaking(false);
+        // Barge-in: stop speech + clear queued sentence audio
+        const wasSpeaking =
+          playbackRef.current.isPlaying() || playbackRef.current.queueLength() > 0;
+        cancelStreamingSpeech();
+        if (wasSpeaking) {
+          void window.aurumDesktop.voiceLog?.({
+            stage: "barge_in",
+            fields: {
+              channel: "VOICE_PTT",
+              playback_stopped: true,
+              queue_cleared: true,
+            },
+          });
+        }
         if (streamingRef.current || awaitingApprovalRef.current) return;
         const started = await captureRef.current.start();
         if (!started.ok) {
@@ -1126,6 +1225,14 @@ export function OverlayApp() {
           setTranscribing(false);
           setActivitySmooth(null);
           const transcript = res?.transcript?.trim() ?? "";
+          void window.aurumDesktop.voiceLog?.({
+            stage: "transcription_complete",
+            fields: {
+              channel: "VOICE_PTT",
+              ok: Boolean(res?.ok),
+              transcript_length: transcript.length,
+            },
+          });
           if (!res?.ok || !shouldAutoSubmitVoiceTranscript(transcript)) {
             writeReply(res?.error || "I didn't catch that.");
             setExpanded(true);
@@ -1357,7 +1464,11 @@ export function OverlayApp() {
                 <div className="overlay-now-sub">
                   {[
                     nowPlaying.artist,
-                    nowPlaying.playing === false ? "Paused" : "Playing",
+                    nowPlaying.playing === false
+                      ? "Paused"
+                      : nowPlaying.playing === true
+                        ? "Playing"
+                        : null,
                   ]
                     .filter(Boolean)
                     .join(" · ")}

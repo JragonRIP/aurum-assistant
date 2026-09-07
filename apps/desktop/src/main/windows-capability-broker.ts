@@ -61,6 +61,8 @@ import {
   isBlockedExecutableExtension,
   isSafeUrl,
 } from "./security";
+import { resolveKnownApplication } from "./known-applications";
+import type { EnumeratedWindow } from "./windows-win32";
 
 export type BrokerContext = {
   approvedRoots: ApprovedRoot[];
@@ -548,6 +550,60 @@ async function openKnownApp(appReference: unknown): Promise<DeviceToolResult> {
   };
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function scoreAppWindow(
+  w: EnumeratedWindow,
+  q: string,
+  executables: string[],
+): number {
+  const title = w.title.toLowerCase();
+  const exe = (w.processName ?? "").toLowerCase();
+  let score = 0;
+  if (executables.length > 0 && exe && executables.includes(exe)) {
+    score += 100;
+  }
+  if (exe && (exe === `${q}.exe` || exe.replace(/\.exe$/, "") === q)) {
+    score += 80;
+  }
+  if (exe.includes(q)) score += 40;
+  // Title match is weakest — Spotify titles are often track names.
+  if (title === q) score += 25;
+  else if (title.startsWith(q + " ") || title.endsWith(" " + q)) score += 15;
+  else if (title.includes(q)) score += 5;
+  return score;
+}
+
+function findApplicationWindows(appName: string): {
+  knownId: string | null;
+  displayName: string;
+  windows: EnumeratedWindow[];
+} {
+  const q = appName.trim().toLowerCase();
+  const known = resolveKnownApplication(q);
+  const displayName = known?.displayName ?? appName.trim();
+  const executables = (known?.executables ?? []).map((e) => e.toLowerCase());
+  const all = enumerateOpenWindows(80);
+  const ranked = all
+    .map((w) => ({ w, score: scoreAppWindow(w, q, executables) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+  // Prefer process/exe matches; drop weak title-only if we have stronger ones.
+  const strong = ranked.filter((x) => x.score >= 40);
+  const chosen = (strong.length > 0 ? strong : ranked).map((x) => x.w);
+  // Deduplicate by HWND
+  const seen = new Set<number>();
+  const windows: EnumeratedWindow[] = [];
+  for (const w of chosen) {
+    if (seen.has(w.hwnd)) continue;
+    seen.add(w.hwnd);
+    windows.push(w);
+  }
+  return { knownId: known?.id ?? null, displayName, windows };
+}
+
 function focusApplication(appName: string): DeviceToolResult {
   const q = appName.trim().toLowerCase();
   if (!q) {
@@ -562,26 +618,22 @@ function focusApplication(appName: string): DeviceToolResult {
       error: { code: "APP_BLOCKED", message: "Blocked application." },
     };
   }
-  const matches = enumerateOpenWindows(60).filter(
-    (w) =>
-      w.title.toLowerCase().includes(q) ||
-      String(w.processId).includes(q),
-  );
-  // Prefer title match containing app name
-  const win = matches[0];
+  const { displayName, windows } = findApplicationWindows(appName);
+  const win = windows[0];
   if (!win) {
     return {
       success: false,
       error: {
         code: "APPLICATION_NOT_FOUND",
-        message: `No open window matched “${appName.trim()}”.`,
+        message: `${displayName} isn't open.`,
       },
     };
   }
+  const processName = win.processName ?? `pid:${win.processId}`;
   const referenceId = rememberWindow({
     hwnd: win.hwnd,
     title: win.title,
-    processName: `pid:${win.processId}`,
+    processName,
     processId: win.processId,
   });
   showWindow(win.hwnd, 9);
@@ -591,31 +643,84 @@ function focusApplication(appName: string): DeviceToolResult {
     data: {
       windowReference: referenceId,
       title: win.title,
-      activityLabel: `Focus · ${win.title}`,
+      processName,
+      processId: win.processId,
+      activityLabel: `Focus · ${displayName}`,
     },
   };
 }
 
-function closeApplication(appName: string): DeviceToolResult {
-  const focused = focusApplication(appName);
-  if (!focused.success || !focused.data?.windowReference) {
-    return focused;
-  }
-  const win = resolveWindow(focused.data.windowReference);
-  if (!win) {
+async function closeApplication(appName: string): Promise<DeviceToolResult> {
+  const q = appName.trim().toLowerCase();
+  if (!q) {
     return {
       success: false,
-      error: { code: "WINDOW_NOT_FOUND", message: "Window disappeared." },
+      error: { code: "VALIDATION_ERROR", message: "App name required." },
     };
   }
-  postCloseWindow(Math.trunc(win.hwnd));
+  if (isBlockedAppName(q)) {
+    return {
+      success: false,
+      error: { code: "APP_BLOCKED", message: "Blocked application." },
+    };
+  }
+
+  const { knownId, displayName, windows } = findApplicationWindows(appName);
+  if (windows.length === 0) {
+    return {
+      success: true,
+      message: `${displayName} isn't open.`,
+      data: {
+        closeState: "NOT_RUNNING",
+        app: displayName,
+        appId: knownId,
+        activityLabel: `${displayName} not running`,
+      },
+    };
+  }
+
+  const targets = windows.slice(0, 8);
+  for (const win of targets) {
+    postCloseWindow(Math.trunc(win.hwnd));
+  }
+
+  // Poll until top-level windows for this app are gone (graceful close).
+  const targetHwnds = new Set(targets.map((w) => w.hwnd));
+  let remaining = targets.length;
+  for (let i = 0; i < 8; i++) {
+    await sleepMs(150 + i * 50);
+    remaining = [...targetHwnds].filter((h) => isWindow(h)).length;
+    if (remaining === 0) break;
+  }
+
+  if (remaining === 0) {
+    return {
+      success: true,
+      message: `${displayName} is closed.`,
+      data: {
+        closeState: "CLOSED",
+        app: displayName,
+        appId: knownId,
+        closedWindows: targets.length,
+        activityLabel: `Closed · ${displayName}`,
+      },
+    };
+  }
+
+  // Still visible — report failure truthfully (do not claim closed).
   return {
-    success: true,
-    data: {
-      title: win.title,
-      activityLabel: `Closing · ${win.title}`,
+    success: false,
+    error: {
+      code: "CLOSE_FAILED",
+      message: `I found ${displayName}, but Windows didn't close it.`,
     },
-    message: `Closing “${win.title}”.`,
+    data: {
+      closeState: "FAILED",
+      app: displayName,
+      appId: knownId,
+      remainingWindows: remaining,
+      activityLabel: `Close failed · ${displayName}`,
+    },
   };
 }
 

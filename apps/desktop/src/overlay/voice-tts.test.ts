@@ -79,15 +79,14 @@ describe("playback blob construction", () => {
 });
 
 describe("OverlayApp TTS contracts", () => {
-  it("syncs replyRef before voice TTS and does not gate on stale error", () => {
+  it("syncs replyRef before voice TTS and streams sentences", () => {
     const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
     assert.match(src, /writeReply/);
     assert.match(src, /replyRef\.current = next/);
-    assert.match(src, /Do not gate on closed-over React `error`/);
-    assert.match(src, /spokeForTurn/);
-    assert.match(src, /play_promise_resolved/);
+    assert.match(src, /StreamingTtsController/);
+    assert.match(src, /onAgentComplete/);
+    assert.match(src, /streamSpeechStarted/);
     assert.match(src, /origin:\s*opts\.origin/);
-    assert.match(src, /log\(["']synth_request_started["']/);
   });
 
   it("awaits audio.play rejection handling via VoicePlayback", () => {
@@ -102,10 +101,9 @@ describe("OverlayApp TTS contracts", () => {
   it("TTS failure stays nonfatal READY with warning only", () => {
     const src = readFileSync(join(here, "OverlayApp.tsx"), "utf8");
     assert.match(src, /Voice playback unavailable/);
-    const speakIdx = src.indexOf("async function speakFinalReply");
-    const speakChunk = src.slice(speakIdx, speakIdx + 4500);
-    assert.equal(/setStatus\(["']ERROR["']\)/.test(speakChunk), false);
-    assert.match(speakChunk, /setStatus\(["']READY["']\)/);
+    const streamSrc = readFileSync(join(here, "streaming-tts.ts"), "utf8");
+    assert.match(streamSrc, /bypassSpokenMode:\s*true/);
+    assert.doesNotMatch(streamSrc, /setStatus\(["']ERROR["']\)/);
   });
 
   it("overlay enables autoplay without user gesture", () => {

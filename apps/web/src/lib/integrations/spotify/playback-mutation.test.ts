@@ -349,7 +349,7 @@ describe("pause/resume verification", () => {
       },
     });
     assert.equal(result.success, true);
-    assert.match(result.message ?? "", /Paused/);
+    assert.match(result.message ?? "", /paused/i);
   });
 
   it("unconfirmed pause does not claim success", async () => {

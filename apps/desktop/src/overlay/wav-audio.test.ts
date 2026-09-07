@@ -95,8 +95,9 @@ describe("Overlay TTS diagnostic contracts", () => {
     const bridge = readFileSync(join(here, "..", "main", "voice-bridge.ts"), "utf8");
     assert.match(bridge, /aurum-tts-debug\.wav|debugWavPath/);
     assert.match(bridge, /inspectWav/);
-    assert.match(bridge, /synth_attempt|withTtsHttpRetries/);
-    assert.match(bridge, /playableMime = "audio\/wav"/);
+    assert.match(bridge, /TtsService/);
+    assert.match(bridge, /provider: result\.provider/);
+    assert.match(bridge, /mimeType: "audio\/wav"/);
   });
 
   it("Test Voice plays through overlay VoicePlayback", () => {
@@ -107,5 +108,7 @@ describe("Overlay TTS diagnostic contracts", () => {
     const preload = readFileSync(join(here, "..", "preload", "index.ts"), "utf8");
     assert.match(preload, /onVoiceTestPlay/);
     assert.match(preload, /voiceTestPlayResult/);
+    const html = readFileSync(join(here, "index.html"), "utf8");
+    assert.match(html, /media-src[^"]*blob:/);
   });
 });

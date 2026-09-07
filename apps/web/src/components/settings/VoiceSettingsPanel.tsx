@@ -44,6 +44,247 @@ function toPlayableBlob(audioBase64: string, mimeType: string): Blob {
   return new Blob([bytes], { type: mimeType.split(";")[0] || "audio/wav" });
 }
 
+type DesktopLocalApi = {
+  voiceEngineStatus?: () => Promise<{
+    ok: boolean;
+    engine?: { status: string; detail?: string | null; modelLoadMs?: number | null };
+    health?: { status: string; ready: boolean; detail?: string | null };
+    voices?: Array<{ id: string; label: string }>;
+    settings?: {
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+      pronunciation?: "natural" | "british" | "americanized_british";
+    };
+  }>;
+  voiceEngineRestart?: () => Promise<{ ok: boolean; engine?: { status: string } }>;
+  localTtsSettingsSet?: (
+    patch: Partial<{
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+      pronunciation: "natural" | "british" | "americanized_british";
+    }>,
+  ) => Promise<{ ok: boolean }>;
+};
+
+function getDesktopLocalApi(): DesktopLocalApi | null {
+  return (
+    (window as unknown as { aurumDesktop?: DesktopLocalApi }).aurumDesktop ??
+    null
+  );
+}
+
+function LocalVoiceEngineSection() {
+  const desktop = getDesktopLocalApi();
+  const [statusLabel, setStatusLabel] = useState("Checking…");
+  const [voices, setVoices] = useState<Array<{ id: string; label: string }>>([]);
+  const [speechEngine, setSpeechEngine] = useState<"local" | "gemini" | "auto">(
+    "local",
+  );
+  const [kokoroVoice, setKokoroVoice] = useState("bm_george");
+  const [speed, setSpeed] = useState(1);
+  const [allowFallback, setAllowFallback] = useState(true);
+  const [pronunciation, setPronunciation] = useState<
+    "natural" | "british" | "americanized_british"
+  >("americanized_british");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!desktop?.voiceEngineStatus) {
+      setStatusLabel("Console only");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await desktop.voiceEngineStatus();
+      const st = r.health?.status || r.engine?.status || "unknown";
+      const map: Record<string, string> = {
+        ready: "Ready",
+        starting: "Starting",
+        loading: "Loading Model",
+        loading_model: "Loading Model",
+        not_installed: "Not Installed",
+        error: "Error",
+        stopped: "Stopped",
+        unavailable: "Unavailable",
+      };
+      setStatusLabel(map[st] || st);
+      setVoices(r.voices ?? []);
+      if (r.settings) {
+        setSpeechEngine(r.settings.speechEngine);
+        setKokoroVoice(r.settings.kokoroVoice);
+        setSpeed(r.settings.speed);
+        setAllowFallback(r.settings.allowGeminiFallback);
+        if (r.settings.pronunciation) {
+          setPronunciation(r.settings.pronunciation);
+        }
+      }
+      if (r.engine?.detail) setNote(r.engine.detail);
+    } catch {
+      setStatusLabel("Error");
+    } finally {
+      setBusy(false);
+    }
+  }, [desktop]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  if (!desktop?.voiceEngineStatus) {
+    return (
+      <p className="text-[12px] text-[var(--aurum-text-dim)] border-b border-[var(--aurum-border)] py-3">
+        Local Kokoro voice engine controls appear in Aurum Console.
+      </p>
+    );
+  }
+
+  async function saveLocal(
+    patch: Partial<{
+      speechEngine: "local" | "gemini" | "auto";
+      kokoroVoice: string;
+      speed: number;
+      allowGeminiFallback: boolean;
+      pronunciation: "natural" | "british" | "americanized_british";
+    }>,
+  ) {
+    setBusy(true);
+    try {
+      await desktop?.localTtsSettingsSet?.(patch);
+      await refresh();
+      setNote("Saved local voice settings.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 border-b border-[var(--aurum-border)] py-3">
+      <div className="flex items-center justify-between gap-3 text-[14px]">
+        <span className="text-[var(--aurum-text-muted)]">Local Voice Engine</span>
+        <span className="text-[var(--aurum-text)]">Status: {statusLabel}</span>
+      </div>
+
+      <label className="grid gap-1 text-[12px] text-[var(--aurum-text-dim)]">
+        Speech engine
+        <select
+          className="aurum-focus-ring bg-transparent py-1 text-[14px] text-[var(--aurum-text)] outline-none"
+          value={speechEngine}
+          disabled={busy}
+          onChange={(e) => {
+            const v = e.target.value as "local" | "gemini" | "auto";
+            setSpeechEngine(v);
+            void saveLocal({ speechEngine: v });
+          }}
+        >
+          <option value="local">Local (Kokoro) — Recommended</option>
+          <option value="auto">Automatic</option>
+          <option value="gemini">Gemini Cloud</option>
+        </select>
+      </label>
+
+      <label className="grid gap-1 text-[12px] text-[var(--aurum-text-dim)]">
+        Voice
+        <select
+          className="aurum-focus-ring bg-transparent py-1 text-[14px] text-[var(--aurum-text)] outline-none"
+          value={kokoroVoice}
+          disabled={busy || voices.length === 0}
+          onChange={(e) => {
+            setKokoroVoice(e.target.value);
+            void saveLocal({ kokoroVoice: e.target.value });
+          }}
+        >
+          {(voices.length
+            ? voices
+            : [{ id: "bm_george", label: "George (British male)" }]
+          ).map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="grid gap-1 text-[12px] text-[var(--aurum-text-dim)]">
+        Pronunciation
+        <select
+          className="aurum-focus-ring bg-transparent py-1 text-[14px] text-[var(--aurum-text)] outline-none"
+          value={pronunciation}
+          disabled={busy}
+          onChange={(e) => {
+            const v = e.target.value as
+              | "natural"
+              | "british"
+              | "americanized_british";
+            setPronunciation(v);
+            void saveLocal({ pronunciation: v });
+          }}
+        >
+          <option value="americanized_british">
+            Americanized British — Recommended
+          </option>
+          <option value="british">British</option>
+          <option value="natural">Natural</option>
+        </select>
+      </label>
+
+      <label className="grid gap-1 text-[12px] text-[var(--aurum-text-dim)]">
+        Speed ({speed.toFixed(2)})
+        <input
+          type="range"
+          min={0.7}
+          max={1.3}
+          step={0.05}
+          value={speed}
+          disabled={busy}
+          onChange={(e) => setSpeed(Number(e.target.value))}
+          onMouseUp={() => void saveLocal({ speed })}
+          onTouchEnd={() => void saveLocal({ speed })}
+        />
+      </label>
+
+      <label className="flex items-center justify-between gap-4 text-[14px]">
+        <span className="text-[var(--aurum-text-muted)]">
+          Allow Gemini cloud fallback
+        </span>
+        <input
+          type="checkbox"
+          checked={allowFallback}
+          disabled={busy}
+          onChange={(e) => {
+            setAllowFallback(e.target.checked);
+            void saveLocal({ allowGeminiFallback: e.target.checked });
+          }}
+        />
+      </label>
+
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          disabled={busy}
+          className="aurum-focus-ring text-[13px] text-[var(--aurum-text-muted)]"
+          onClick={() => {
+            setBusy(true);
+            void desktop
+              ?.voiceEngineRestart?.()
+              .then(() => refresh())
+              .finally(() => setBusy(false));
+          }}
+        >
+          Restart Voice Engine
+        </button>
+      </div>
+      {note ? (
+        <p className="text-[12px] text-[var(--aurum-text-dim)]">{note}</p>
+      ) : null}
+    </div>
+  );
+}
+
 export function VoiceSettingsPanel() {
   const [settings, setSettings] = useState<VoiceSettings>(DEFAULT_VOICE_SETTINGS);
   const [busy, setBusy] = useState(false);
@@ -240,9 +481,11 @@ export function VoiceSettingsPanel() {
     <div className="space-y-4 py-3">
       <p className="text-[13px] text-[var(--aurum-text-muted)]">
         Push-to-talk: hold Ctrl+Space (~300ms) in Aurum Console. Quick tap still
-        opens the text overlay. Spoken replies use Gemini TTS; raw audio is not
-        stored.
+        opens the text overlay. Spoken replies use the local Kokoro engine by
+        default (Gemini cloud is optional fallback).
       </p>
+
+      <LocalVoiceEngineSection />
 
       <label className="flex items-center justify-between gap-4 border-b border-[var(--aurum-border)] py-3 text-[14px]">
         <span className="text-[var(--aurum-text-muted)]">Voice enabled</span>
@@ -277,7 +520,7 @@ export function VoiceSettingsPanel() {
       </label>
 
       <label className="grid gap-1 border-b border-[var(--aurum-border)] py-3 text-[12px] text-[var(--aurum-text-dim)]">
-        Voice
+        Cloud Gemini voice (fallback only)
         <select
           className="aurum-focus-ring bg-transparent py-1 text-[14px] text-[var(--aurum-text)] outline-none"
           value={settings.ttsVoice}

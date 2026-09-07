@@ -13,6 +13,17 @@ directories:
 files:
   - "**/*"
 
+# Local Kokoro voice engine (managed portable Python + models). Built by
+# apps/voice-engine/scripts/prepare-packaged-runtime.mjs before pack/release.
+extraResources:
+  - from: resources/voice-engine
+    to: voice-engine
+    filter:
+      - "**/*"
+  - from: ../voice-engine/THIRD_PARTY_NOTICES.txt
+    to: THIRD_PARTY_NOTICES.txt
+
+
 extraMetadata:
   name: aurum
   main: dist/main/index.js

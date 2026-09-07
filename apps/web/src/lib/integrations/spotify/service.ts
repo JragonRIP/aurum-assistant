@@ -881,6 +881,28 @@ export async function runSpotifyTool(opts: {
           });
         }
 
+        let verifiedPlaying: boolean | null = null;
+        for (const delay of [300, 700, 1200]) {
+          await new Promise((r) => setTimeout(r, delay));
+          try {
+            const state = await adapter.getPlaybackState();
+            verifiedPlaying = Boolean(state.isPlaying);
+            if (verifiedPlaying) break;
+          } catch {
+            /* keep polling */
+          }
+        }
+        if (opts.conversationId && verifiedPlaying != null) {
+          setMediaContext(opts.conversationId, {
+            trackLabel: trackRef.label,
+            artistLabel: trackRef.subtitle ?? undefined,
+            isPlaying: verifiedPlaying,
+            trackReference: trackRef.id,
+          });
+        }
+
+        const confirmed = verifiedPlaying === true;
+
         // Learn when this play resolves an open disambiguation session
         const session = await getActiveDisambiguationSession({
           supabase: opts.supabase,
@@ -921,11 +943,24 @@ export async function runSpotifyTool(opts: {
             track: trackRef.label,
             artists: trackRef.subtitle,
             referenceId: trackRef.id,
+            isPlaying: verifiedPlaying,
+            accepted: true,
+            verified: confirmed,
+            actualState:
+              verifiedPlaying == null
+                ? "unknown"
+                : verifiedPlaying
+                  ? "playing"
+                  : "paused",
           },
-          message: trackRef.subtitle
-            ? `Playing ${trackRef.label} — ${trackRef.subtitle}.`
-            : `Playing ${trackRef.label}.`,
-          activityLabel: `Playing ${trackRef.label}`,
+          message: confirmed
+            ? trackRef.subtitle
+              ? `Playing ${trackRef.label} — ${trackRef.subtitle}.`
+              : `Playing ${trackRef.label}.`
+            : `I sent the play command for ${trackRef.label}.`,
+          activityLabel: confirmed
+            ? `Playing ${trackRef.label}`
+            : `Play sent · ${trackRef.label}`,
         };
       }
 
@@ -1677,6 +1712,25 @@ export async function runSpotifyTool(opts: {
           });
         }
 
+        // Verify playback actually started — do not claim "playing" on accept alone.
+        let verifiedPlaying: boolean | null = null;
+        for (const delay of [300, 700, 1200]) {
+          await new Promise((r) => setTimeout(r, delay));
+          try {
+            const state = await adapter.getPlaybackState();
+            verifiedPlaying = Boolean(state.isPlaying);
+            if (verifiedPlaying) break;
+          } catch {
+            /* keep polling */
+          }
+        }
+        if (opts.conversationId && verifiedPlaying != null) {
+          setMediaContext(opts.conversationId, {
+            trackLabel: cref.label,
+            isPlaying: verifiedPlaying,
+          });
+        }
+
         if (kind === "playlist") {
           // Playlist playback must not leave stale TRACK clarification active.
           await expireActiveDisambiguationSessions({
@@ -1715,6 +1769,7 @@ export async function runSpotifyTool(opts: {
           }
         }
 
+        const confirmed = verifiedPlaying === true;
         return {
           success: true,
           data: {
@@ -1722,9 +1777,23 @@ export async function runSpotifyTool(opts: {
             kind,
             resourceType: kind,
             referenceId: cref.id,
+            isPlaying: verifiedPlaying,
+            accepted: true,
+            verified: confirmed,
+            confirmation: confirmed ? "CONFIRMED" : "ACCEPTED_UNCONFIRMED",
+            actualState:
+              verifiedPlaying == null
+                ? "unknown"
+                : verifiedPlaying
+                  ? "playing"
+                  : "paused",
           },
-          message: `Playing ${cref.label} on Spotify.`,
-          activityLabel: `Playing · ${cref.label}`,
+          message: confirmed
+            ? `Playing ${cref.label} on Spotify.`
+            : `I sent the play command for ${cref.label}.`,
+          activityLabel: confirmed
+            ? `Playing · ${cref.label}`
+            : `Started · ${cref.label}`,
         };
       }
 

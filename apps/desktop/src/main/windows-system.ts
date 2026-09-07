@@ -294,14 +294,15 @@ function getOpenWindows(): DeviceToolResult {
     const referenceId = rememberWindow({
       hwnd: w.hwnd,
       title: w.title,
-      processName: `pid:${w.processId}`,
+      processName: w.processName ?? `pid:${w.processId}`,
       processId: w.processId,
     });
     windows.push({
       windowReference: referenceId,
       referenceId,
       title: w.title,
-      processName: `pid:${w.processId}`,
+      processName: w.processName ?? `pid:${w.processId}`,
+      processId: w.processId,
     });
   }
   return {

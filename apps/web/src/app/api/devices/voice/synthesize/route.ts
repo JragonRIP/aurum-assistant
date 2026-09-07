@@ -47,6 +47,8 @@ export async function POST(request: Request) {
     voice?: string;
     /** Temporary diagnostic: skip spoken_mode / enabled gates for Test Voice. */
     bypassSpokenMode?: boolean;
+    /** Eligibility only — no provider TTS (used by local Kokoro path). */
+    previewOnly?: boolean;
   } | null;
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text || text.length > 4000) {
@@ -55,6 +57,7 @@ export async function POST(request: Request) {
 
   const settings = await getVoiceSettings(auth.supabase, auth.device.user_id);
   const bypass = body?.bypassSpokenMode === true;
+  const previewOnly = body?.previewOnly === true;
   const speechCandidate = buildSpeechResponse(text);
 
   if (!bypass) {
@@ -99,6 +102,16 @@ export async function POST(request: Request) {
             : "tts_skipped",
       });
     }
+  }
+
+  if (previewOnly) {
+    return NextResponse.json({
+      skipped: false,
+      speechText: speechCandidate,
+      spokenMode: settings.spokenMode,
+      voiceEnabled: settings.enabled,
+      previewOnly: true,
+    });
   }
 
   const voice = body?.voice?.trim() || settings.ttsVoice;

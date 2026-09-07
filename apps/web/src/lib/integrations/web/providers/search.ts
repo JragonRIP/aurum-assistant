@@ -155,7 +155,9 @@ export const braveSearchProvider: WebSearchProvider = {
         },
         signal: ctrl.signal,
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        throw new Error(`Brave search HTTP ${res.status}`);
+      }
       const json = (await res.json()) as {
         web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
       };
@@ -190,25 +192,77 @@ export function getSearchProviders(): WebSearchProvider[] {
 export async function searchWeb(
   queryRaw: string,
   signal?: AbortSignal,
-): Promise<{ query: string; results: WebSearchHit[]; provider: string }> {
+): Promise<{
+  query: string;
+  results: WebSearchHit[];
+  provider: string;
+  attempts: Array<{
+    provider: string;
+    ok: boolean;
+    resultCount: number;
+    latencyMs: number;
+    error?: string;
+  }>;
+}> {
   const query = sanitizeQuery(queryRaw);
   if (!query) {
     throw new SafeFetchError("Empty query", "INVALID_URL");
   }
 
+  const attempts: Array<{
+    provider: string;
+    ok: boolean;
+    resultCount: number;
+    latencyMs: number;
+    error?: string;
+  }> = [];
   let lastError: unknown;
   for (const provider of getSearchProviders()) {
+    const started = Date.now();
     try {
       const results = await provider.search(query, signal);
+      const latencyMs = Date.now() - started;
+      attempts.push({
+        provider: provider.id,
+        ok: true,
+        resultCount: results.length,
+        latencyMs,
+      });
+      console.info("[aurum:web_search]", {
+        provider: provider.id,
+        attempt: attempts.length,
+        status: results.length > 0 ? "hit" : "empty",
+        latency_ms: latencyMs,
+        fallback_used: attempts.length > 1,
+      });
       if (results.length > 0) {
-        return { query, results, provider: provider.id };
+        return {
+          query,
+          results,
+          provider: provider.id,
+          attempts,
+        };
       }
     } catch (err) {
       lastError = err;
+      attempts.push({
+        provider: provider.id,
+        ok: false,
+        resultCount: 0,
+        latencyMs: Date.now() - started,
+        error: err instanceof Error ? err.message.slice(0, 120) : "error",
+      });
+      console.info("[aurum:web_search]", {
+        provider: provider.id,
+        attempt: attempts.length,
+        status: "error",
+        latency_ms: Date.now() - started,
+        fallback_used: true,
+      });
       continue;
     }
   }
 
   if (lastError) throw lastError;
-  return { query, results: [], provider: "none" };
+  return { query, results: [], provider: "none", attempts };
 }

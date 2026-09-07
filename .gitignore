@@ -74,3 +74,11 @@ logs/
 # supabase local
 supabase/.branches
 supabase/.temp
+
+# local Kokoro voice engine
+apps/voice-engine/.venv/
+apps/voice-engine/.pack-cache/
+apps/voice-engine/smoke-*.wav
+apps/voice-engine/smoke-*.txt
+apps/voice-engine/__pycache__/
+apps/desktop/resources/

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import fs from "node:fs";
 import { createDefaultRegistry } from "@aurum/tools";
 import { isBlockedHostname, assertPublicHttpUrl } from "./ssrf";
 import {
@@ -24,6 +25,16 @@ describe("web research parsing", () => {
     assert.ok(hits.length >= 1);
     assert.equal(hits[0]?.domain, "example.com");
     assert.match(hits[0]?.title ?? "", /Lamborghini/i);
+  });
+
+  it("search failures stay short — no capability-limit wall of text", () => {
+    const src = fs.readFileSync(
+      new URL("./research.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(src, /Web search was temporarily unavailable/);
+    assert.match(src, /Couldn't reach web search/);
+    assert.doesNotMatch(src, /this is not a permanent capability limit/);
   });
 
   it("rejects empty search query", async () => {

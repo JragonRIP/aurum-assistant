@@ -22,6 +22,18 @@ export {
   isOpenAIConfigured,
 } from "./config";
 export { buildSpeechResponse } from "./speech";
+export type { BuildSpeechOptions } from "./speech";
+export {
+  applySpokenPronunciation,
+  BUILTIN_PRONUNCIATIONS,
+  mergePronunciationDictionaries,
+  pronunciationPreferenceLabel,
+} from "./spoken-pronunciation";
+export type {
+  PronunciationEntry,
+  PronunciationOptions,
+  PronunciationPreference,
+} from "./spoken-pronunciation";
 export { buildCapabilitySummary, toolIdsFromRegistry } from "./capabilities";
 export type { CapabilitySessionFlags } from "./capabilities";
 export {

@@ -96,6 +96,8 @@ export type EnumeratedWindow = {
   hwnd: number;
   title: string;
   processId: number;
+  /** Executable basename when available (e.g. Spotify.exe). */
+  processName: string | null;
 };
 
 let enumWindowsProcType: ReturnType<typeof koffi.proto> | null = null;
@@ -115,6 +117,45 @@ function getEnumWindows() {
     ]) as (cb: unknown, lParam: number) => boolean;
   }
   return { EnumWindowsProc: enumWindowsProcType, EnumWindows: enumWindowsFn };
+}
+
+/** Resolve process image basename via QueryFullProcessImageNameW (no PowerShell). */
+export function getProcessImageBasename(pid: number): string | null {
+  if (process.platform !== "win32" || !pid || pid <= 0) return null;
+  const k32 = getKernel32();
+  const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+  const OpenProcess = k32.func("OpenProcess", "void *", [
+    "uint32",
+    "bool",
+    "uint32",
+  ]);
+  const CloseHandle = k32.func("CloseHandle", "bool", ["void *"]);
+  const QueryFullProcessImageNameW = k32.func(
+    "QueryFullProcessImageNameW",
+    "bool",
+    ["void *", "uint32", "void *", "_Inout_ uint32 *"],
+  );
+  const handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+  if (!handle) return null;
+  try {
+    const sizeChars = 520;
+    const buf = Buffer.alloc(sizeChars * 2);
+    const sizeOut = [sizeChars];
+    const ok = QueryFullProcessImageNameW(handle, 0, buf, sizeOut);
+    if (!ok) return null;
+    const full = buf.toString("utf16le").replace(/\0+$/, "").trim();
+    if (!full) return null;
+    const base = full.split(/[/\\]/).pop() ?? full;
+    return base || null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      CloseHandle(handle);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function enumerateOpenWindows(limit = 40): EnumeratedWindow[] {
@@ -137,6 +178,7 @@ export function enumerateOpenWindows(limit = 40): EnumeratedWindow[] {
 
   const results: EnumeratedWindow[] = [];
   const { EnumWindowsProc, EnumWindows } = getEnumWindows();
+  const nameCache = new Map<number, string | null>();
 
   const cb = koffi.register((hwnd: object) => {
     if (results.length >= limit) return false;
@@ -149,11 +191,22 @@ export function enumerateOpenWindows(limit = 40): EnumeratedWindow[] {
     if (!title) return true;
     const pidOut = [0];
     GetWindowThreadProcessId(hwnd, pidOut);
+    const pid = pidOut[0] ?? 0;
+    let processName: string | null = null;
+    if (pid > 0) {
+      if (nameCache.has(pid)) {
+        processName = nameCache.get(pid) ?? null;
+      } else {
+        processName = getProcessImageBasename(pid);
+        nameCache.set(pid, processName);
+      }
+    }
     const hwndNum = Number(BigInt(koffi.address(hwnd)));
     results.push({
       hwnd: hwndNum,
       title,
-      processId: pidOut[0] ?? 0,
+      processId: pid,
+      processName,
     });
     return true;
   }, koffi.pointer(EnumWindowsProc));

@@ -1,8 +1,7 @@
 /**
- * Single-slot TTS playback for the overlay.
- * Owns HTMLAudioElement independently of React render lifecycle.
- * New play() stops previous. Esc / new PTT should call stop().
- * Object URL revoked only on ended / stop / barge-in / error — never right after play().
+ * Single-element TTS playback with an ordered queue.
+ * One Audio element at a time; pre-buffered clips play sequentially.
+ * stop() / barge-in clears current + queued; stale turnIds are ignored.
  */
 import { pcmOrBlob } from "./wav-audio";
 
@@ -41,6 +40,17 @@ export type PlaybackEventSink = (
   fields?: Record<string, string | number | boolean | null>,
 ) => void;
 
+type QueuedClip = {
+  turnId: number;
+  chunkIndex: number;
+  bytes: Uint8Array;
+  mimeType: string;
+  onEvent?: PlaybackEventSink;
+  onEnded?: () => void;
+  onError?: (message: string) => void;
+  onQueueIdle?: () => void;
+};
+
 /** Module singleton — survives OverlayApp remounts. */
 let sharedPlayback: VoicePlayback | null = null;
 
@@ -54,10 +64,22 @@ export class VoicePlayback {
   private objectUrl: string | null = null;
   private playing = false;
   private generation = 0;
+  private turnId = 0;
+  private queue: QueuedClip[] = [];
+  private draining = false;
   private mountedEl: HTMLAudioElement | null = null;
+  private activeClip: QueuedClip | null = null;
 
   isPlaying(): boolean {
     return this.playing;
+  }
+
+  queueLength(): number {
+    return this.queue.length + (this.playing ? 1 : 0);
+  }
+
+  getTurnId(): number {
+    return this.turnId;
   }
 
   /** Strong reference retained until stop/ended/error. */
@@ -65,33 +87,58 @@ export class VoicePlayback {
     return this.audio;
   }
 
+  /** Start a logical speak turn; invalidates prior queue. */
+  beginTurn(turnId: number): void {
+    this.stop();
+    this.turnId = turnId;
+  }
+
+  /**
+   * Hard stop: bump generation, clear queue, stop current audio.
+   * Used for barge-in / Esc / new turn.
+   */
   stop(): void {
     this.generation += 1;
-    if (this.audio) {
-      try {
-        this.audio.onended = null;
-        this.audio.onerror = null;
-        this.detachMediaListeners(this.audio);
-        this.audio.pause();
-        this.audio.removeAttribute("src");
-        this.audio.load();
-      } catch {
-        // ignore
-      }
-      this.unmountAudioElement(this.audio);
-      this.audio = null;
-    }
-    if (this.objectUrl) {
-      try {
-        URL.revokeObjectURL(this.objectUrl);
-      } catch {
-        // ignore
-      }
-      this.objectUrl = null;
-    }
+    this.turnId = -1;
+    this.queue = [];
+    this.draining = false;
+    this.activeClip = null;
+    this.clearCurrentMedia();
     this.playing = false;
   }
 
+  /**
+   * Enqueue a clip for ordered playback. Stale turnIds are discarded.
+   * Does not overlap — pumps one clip at a time.
+   */
+  enqueueBase64(
+    audioBase64: string,
+    mimeType: string,
+    opts: {
+      turnId: number;
+      chunkIndex: number;
+      onEvent?: PlaybackEventSink;
+      onEnded?: () => void;
+      onError?: (message: string) => void;
+      onQueueIdle?: () => void;
+    },
+  ): void {
+    if (opts.turnId !== this.turnId) return;
+    const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
+    this.queue.push({
+      turnId: opts.turnId,
+      chunkIndex: opts.chunkIndex,
+      bytes,
+      mimeType,
+      onEvent: opts.onEvent,
+      onEnded: opts.onEnded,
+      onError: opts.onError,
+      onQueueIdle: opts.onQueueIdle,
+    });
+    void this.pump();
+  }
+
+  /** Immediate replace play (Test Voice / approval). Clears queue. */
   async playBase64(
     audioBase64: string,
     mimeType: string,
@@ -116,13 +163,130 @@ export class VoicePlayback {
       onEvent?: PlaybackEventSink;
     },
   ): Promise<{ ok: boolean; error?: string; audioBytes?: number; diag: PlaybackDiag }> {
-    this.stop();
+    this.queue = [];
+    this.draining = false;
+    this.activeClip = null;
+    return this.playBytesInternal(bytes, mimeType, {
+      onEnded: opts?.onEnded,
+      onError: opts?.onError,
+      onEvent: opts?.onEvent,
+      sinkId: opts?.sinkId,
+      advanceQueue: false,
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.playing || this.draining) return;
+    const next = this.queue.shift();
+    if (!next) return;
+    if (next.turnId !== this.turnId) {
+      void this.pump();
+      return;
+    }
+    this.draining = true;
+    this.activeClip = next;
+    // playBytesInternal returns after audio.play() resolves, while audio may
+    // still be playing. Next clip is started only from onended → pump().
+    await this.playBytesInternal(next.bytes, next.mimeType, {
+      onEvent: next.onEvent,
+      onError: (message) => {
+        next.onError?.(message);
+        this.draining = false;
+        this.activeClip = null;
+        void this.pump();
+      },
+      onEnded: () => {
+        next.onEnded?.();
+        this.draining = false;
+        this.activeClip = null;
+        if (this.queue.length === 0 && !this.playing) {
+          next.onQueueIdle?.();
+        } else {
+          void this.pump();
+        }
+      },
+      advanceQueue: false,
+      expectedTurnId: next.turnId,
+    });
+    // If play failed before starting, drain flag may still be true.
+    if (!this.playing) {
+      this.draining = false;
+      this.activeClip = null;
+      if (this.queue.length === 0) {
+        next.onQueueIdle?.();
+      } else {
+        void this.pump();
+      }
+    }
+  }
+
+  private clearCurrentMedia(): void {
+    if (this.audio) {
+      try {
+        this.audio.onended = null;
+        this.audio.onerror = null;
+        this.detachMediaListeners(this.audio);
+        this.audio.pause();
+        this.audio.removeAttribute("src");
+        this.audio.load();
+      } catch {
+        // ignore
+      }
+      this.unmountAudioElement(this.audio);
+      this.audio = null;
+    }
+    if (this.objectUrl) {
+      try {
+        URL.revokeObjectURL(this.objectUrl);
+      } catch {
+        // ignore
+      }
+      this.objectUrl = null;
+    }
+  }
+
+  private mediaErrorDetail(audio: HTMLAudioElement): {
+    code: number | null;
+    message: string;
+  } {
+    const err = audio.error;
+    if (!err) return { code: null, message: "Audio element error" };
+    const labels: Record<number, string> = {
+      1: "MEDIA_ERR_ABORTED",
+      2: "MEDIA_ERR_NETWORK",
+      3: "MEDIA_ERR_DECODE",
+      4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+    };
+    return {
+      code: err.code,
+      message: labels[err.code] || err.message || "Audio element error",
+    };
+  }
+
+  private async playBytesInternal(
+    bytes: Uint8Array,
+    mimeType: string,
+    opts: {
+      sinkId?: string | null;
+      onEnded?: () => void;
+      onError?: (message: string) => void;
+      onEvent?: PlaybackEventSink;
+      advanceQueue: boolean;
+      expectedTurnId?: number;
+    },
+  ): Promise<{ ok: boolean; error?: string; audioBytes?: number; diag: PlaybackDiag }> {
+    // Replace current element without invalidating the queue / turn.
+    this.clearCurrentMedia();
+    this.generation += 1;
     const gen = this.generation;
     const emit: PlaybackEventSink = (event, fields) => {
       opts?.onEvent?.(event, fields);
     };
     const events: PlaybackEventName[] = [];
-    const track = (event: PlaybackEventName, fields?: Record<string, string | number | boolean | null>) => {
+    const track = (
+      event: PlaybackEventName,
+      fields?: Record<string, string | number | boolean | null>,
+    ) => {
       events.push(event);
       emit(event, fields);
     };
@@ -144,7 +308,6 @@ export class VoicePlayback {
       audio.volume = 1;
       audio.muted = false;
       audio.playbackRate = 1;
-      // Keep element in the document — some Electron builds silent-play detached Audio.
       this.mountAudioElement(audio);
       audio.src = this.objectUrl;
       this.audio = audio;
@@ -168,20 +331,34 @@ export class VoicePlayback {
 
       audio.onended = () => {
         if (gen !== this.generation) return;
+        if (
+          opts.expectedTurnId != null &&
+          opts.expectedTurnId !== this.turnId
+        ) {
+          return;
+        }
         this.playing = false;
         track("ended");
         diag.events = events.join(",");
-        // Revoke only after playback completes.
-        this.stop();
+        this.clearCurrentMedia();
         opts?.onEnded?.();
+        if (opts.advanceQueue) {
+          void this.pump();
+        }
       };
       audio.onerror = () => {
         if (gen !== this.generation) return;
         this.playing = false;
-        const msg = "Audio element error";
-        track("error", { play_error_message: msg });
-        this.stop();
-        opts?.onError?.(msg);
+        const detail = this.mediaErrorDetail(audio);
+        track("error", {
+          play_error_message: detail.message,
+          media_error_code: detail.code,
+        });
+        this.clearCurrentMedia();
+        opts?.onError?.(detail.message);
+        if (opts.advanceQueue) {
+          void this.pump();
+        }
       };
 
       track("play_called", {
@@ -194,6 +371,10 @@ export class VoicePlayback {
       });
       try {
         await audio.play();
+        if (gen !== this.generation) {
+          diag.events = events.join(",");
+          return { ok: false, error: "Playback superseded", diag };
+        }
         diag.playPromiseResolved = true;
         track("play_resolved", {
           volume: audio.volume,
@@ -219,9 +400,12 @@ export class VoicePlayback {
           play_error_name: name,
           play_error_message: message,
         });
-        this.stop();
+        this.clearCurrentMedia();
         opts?.onError?.(message);
         diag.events = events.join(",");
+        if (opts.advanceQueue) {
+          void this.pump();
+        }
         return { ok: false, error: message, audioBytes: bytes.byteLength, diag };
       }
 
@@ -233,11 +417,16 @@ export class VoicePlayback {
 
       return { ok: true, audioBytes: bytes.byteLength, diag };
     } catch (err) {
-      this.stop();
-      const message = err instanceof Error ? err.message.slice(0, 160) : "Playback failed";
+      this.playing = false;
+      this.clearCurrentMedia();
+      const message =
+        err instanceof Error ? err.message.slice(0, 160) : "Playback failed";
       diag.playErrorMessage = message;
       diag.playErrorName = err instanceof Error ? err.name : "Error";
       diag.events = events.join(",");
+      if (opts.advanceQueue) {
+        void this.pump();
+      }
       return { ok: false, error: message, diag };
     }
   }
@@ -269,7 +458,10 @@ export class VoicePlayback {
   private attachMediaListeners(
     audio: HTMLAudioElement,
     gen: number,
-    track: (event: PlaybackEventName, fields?: Record<string, string | number | boolean | null>) => void,
+    track: (
+      event: PlaybackEventName,
+      fields?: Record<string, string | number | boolean | null>,
+    ) => void,
   ): void {
     const names: PlaybackEventName[] = [
       "loadstart",
