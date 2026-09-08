@@ -27,6 +27,7 @@ export type TtsSynthesizeResult = {
   voice: string;
   latencyMs: number;
   audioBytes: number;
+  addressApplied?: boolean;
 };
 
 export type TtsSynthesizeFailure = {

@@ -375,6 +375,7 @@ export async function resolveUserPlaylist(opts: {
         name: p.name,
         public: true as boolean | null,
         ownerId: p.ownerId,
+        collaborative: false,
       })),
       { query: searchKey, preferredId: null, currentUserId },
     );

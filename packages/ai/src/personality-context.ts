@@ -8,18 +8,23 @@ export const PERSONALITY_CANONICAL_KEYS = {
   humor: "preference:humor_level",
   sarcasm: "preference:sarcasm_level",
   formality: "preference:formality",
+  address: "preference:preferred_address",
 } as const;
 
 export type PersonalityStyle = "refined";
 export type HumorLevel = "none" | "subtle" | "more";
 export type SarcasmLevel = "none" | "subtle" | "more";
 export type FormalityLevel = "polished" | "casual" | "serious";
+export type PreferredAddressMode = "none" | "sir" | "first_name" | "custom";
 
 export type PersonalityPreferences = {
   style: PersonalityStyle;
   humor: HumorLevel;
   sarcasm: SarcasmLevel;
   formality: FormalityLevel;
+  /** Spoken vocative. Speech layer owns insertion — never the model. */
+  preferredAddress: PreferredAddressMode;
+  preferredAddressValue?: string;
 };
 
 export const DEFAULT_PERSONALITY_PREFERENCES: PersonalityPreferences = {
@@ -27,6 +32,7 @@ export const DEFAULT_PERSONALITY_PREFERENCES: PersonalityPreferences = {
   humor: "subtle",
   sarcasm: "subtle",
   formality: "polished",
+  preferredAddress: "sir",
 };
 
 /** Internal tone — never shown to users. */
@@ -72,8 +78,32 @@ export function parsePersonalityPreferences(
     if (key === PERSONALITY_CANONICAL_KEYS.formality) {
       prefs.formality = parseFormality(content) ?? prefs.formality;
     }
+    if (key === PERSONALITY_CANONICAL_KEYS.address) {
+      const parsed = parsePreferredAddress(m.content ?? "");
+      if (parsed) {
+        prefs.preferredAddress = parsed.mode;
+        prefs.preferredAddressValue = parsed.value;
+      }
+    }
   }
   return prefs;
+}
+
+function parsePreferredAddress(
+  content: string,
+): { mode: PreferredAddressMode; value?: string } | null {
+  const t = content.trim();
+  if (!t) return null;
+  const lower = t.toLowerCase();
+  if (/\b(none|no address|don't address|do not address)\b/.test(lower)) {
+    return { mode: "none" };
+  }
+  if (/\bsir\b/.test(lower)) return { mode: "sir" };
+  if (/\b(first name|given name)\b/.test(lower)) {
+    return { mode: "first_name", value: t };
+  }
+  if (/\bcustom\b/.test(lower)) return { mode: "custom", value: t };
+  return { mode: "custom", value: t };
 }
 
 function parseHumor(content: string): HumorLevel | null {
@@ -205,6 +235,8 @@ export function applyTemporaryOverride(
     humor: override.humor ?? base.humor,
     sarcasm: override.sarcasm ?? base.sarcasm,
     formality: override.formality ?? base.formality,
+    preferredAddress: base.preferredAddress,
+    preferredAddressValue: base.preferredAddressValue,
   };
 }
 
@@ -223,6 +255,7 @@ export function buildPersonalityGuidance(opts: {
     "Personality expression for this turn (internal guidance — never name these modes to the user):",
     `- Baseline: refined Aurum — composed, intelligent, observant, articulate, efficient, subtly confident, slightly formal, understated. Competent first; wit second.`,
     `- Humor level: ${prefs.humor}. Sarcasm level: ${prefs.sarcasm}. Formality: ${prefs.formality}.`,
+    `- Preferred spoken address: ${prefs.preferredAddress}. The speech layer inserts this in spoken output only. Do NOT write "sir" (or any address term) in displayed replies, or you will double it.`,
   ];
 
   if (tone === "serious" || prefs.humor === "none" || prefs.formality === "serious") {
@@ -259,7 +292,7 @@ export function buildPersonalityGuidance(opts: {
 
   lines.push(
     "- You may politely disagree: “I wouldn't do that. There's a cleaner option.”",
-    "- Routine confirmations stay extremely short: “Done.” “Certainly.” “That's handled.”",
+    "- Routine confirmations stay extremely short: “Done.” “Certainly.” “That's handled.” Do not append “sir” in displayed text.",
     "- Do not force humor. Do not tell jokes. Do not roast the user. No emojis by default. No slang-heavy voice. No theatrical AI / superhero roleplay.",
     "- Never imitate JARVIS, Iron Man, Paul Bettany, or any copyrighted character voice or catchphrases. You are Aurum.",
   );

@@ -45,6 +45,18 @@ export function emptyOverlayTurn(): OverlayTurnSnapshot {
   };
 }
 
+export function isOverlayAwaitingUserFailure(code?: string): boolean {
+  return (
+    code === "AMBIGUOUS_TRACK" ||
+    code === "AMBIGUOUS_PLAYLIST" ||
+    code === "AMBIGUOUS_MATCH" ||
+    code === "MISSING_SCOPE" ||
+    code === "AUTH_REVOKED" ||
+    code === "TOKEN_EXPIRED" ||
+    code === "NOT_CONNECTED"
+  );
+}
+
 /** Soft tool failures must not force FAILED / ERROR presence. */
 export function isOverlaySoftToolFailure(opts: {
   code?: string;
@@ -52,14 +64,15 @@ export function isOverlaySoftToolFailure(opts: {
 }): boolean {
   const code = opts.code ?? "";
   if (
+    isOverlayAwaitingUserFailure(code) ||
     code === "APPROVAL_REQUIRED" ||
-    code === "AMBIGUOUS_TRACK" ||
-    code === "AMBIGUOUS_PLAYLIST" ||
-    code === "AMBIGUOUS_MATCH" ||
     code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
     code === "RATE_LIMITED" ||
     code === "PROVIDER_UNAVAILABLE" ||
-    code === "UNSUPPORTED"
+    code === "UNSUPPORTED" ||
+    code === "PLAYLIST_NOT_WRITABLE" ||
+    code === "TRANSIENT_FAILURE" ||
+    code === "SPOTIFY_REJECTED"
   ) {
     return true;
   }
@@ -130,14 +143,10 @@ export function reduceOverlayTurn(
       next.activity = null;
       return next;
     case "tool_failed": {
-      if (
-        event.error?.code === "AMBIGUOUS_TRACK" ||
-        event.error?.code === "AMBIGUOUS_PLAYLIST" ||
-        event.error?.code === "AMBIGUOUS_MATCH"
-      ) {
+      if (isOverlayAwaitingUserFailure(event.error?.code)) {
         next.status = "WAITING_FOR_USER";
         next.error = null;
-        if (event.error.message) next.reply = event.error.message;
+        if (event.error?.message) next.reply = event.error.message;
         return next;
       }
       if (isOverlaySoftToolFailure({ code: event.error?.code, tool: event.tool })) {

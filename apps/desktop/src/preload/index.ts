@@ -299,6 +299,19 @@ const aurumDesktop = {
     bypassSpokenMode?: boolean;
     debugDumpWav?: boolean;
     purpose?: string;
+    alreadyPrepared?: boolean;
+    skipAddress?: boolean;
+    addressAlreadyUsed?: boolean;
+    skipSimplification?: boolean;
+    origin?: "ptt" | "stream" | "ack" | "tool" | "test_voice" | "final";
+    userMessage?: string;
+    toolHints?: Array<{
+      tool?: string;
+      message?: string;
+      success?: boolean;
+      errorCode?: string;
+      data?: Record<string, unknown>;
+    }>;
   }): Promise<{
     ok: boolean;
     audioBase64?: string;

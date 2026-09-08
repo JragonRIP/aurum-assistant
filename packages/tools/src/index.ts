@@ -32,6 +32,7 @@ export {
   createInMemoryDataAccess,
   resolveToolActivityLabel,
   isClarificationErrorCode,
+  isAwaitingUserToolErrorCode,
   isSoftToolErrorCode,
 } from "./executor";
 export type { ToolExecutorEvent, ToolExecutorHooks } from "./executor";

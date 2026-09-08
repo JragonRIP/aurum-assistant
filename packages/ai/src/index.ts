@@ -23,6 +23,33 @@ export {
 } from "./config";
 export { buildSpeechResponse } from "./speech";
 export type { BuildSpeechOptions } from "./speech";
+export { prepareSpokenText } from "./prepare-spoken";
+export type {
+  PrepareSpokenInput,
+  PrepareSpokenResult,
+  SpokenOrigin,
+} from "./prepare-spoken";
+export {
+  simplifySpokenText,
+  wantsFullSpokenReadback,
+} from "./spoken-simplify";
+export type { SpokenDetailMode, SpokenToolHint } from "./spoken-simplify";
+export {
+  classifySpokenAck,
+  isInstantSpokenAction,
+  looksLikeMultiSpokenAction,
+  spokenAcknowledgementText,
+} from "./spoken-ack";
+export type { SpokenAckKind } from "./spoken-ack";
+export {
+  applySpokenAddress,
+  DEFAULT_PREFERRED_ADDRESS,
+  resolveAddressToken,
+} from "./spoken-address";
+export type {
+  PreferredAddress,
+  PreferredAddressMode as SpokenPreferredAddressMode,
+} from "./spoken-address";
 export {
   applySpokenPronunciation,
   BUILTIN_PRONUNCIATIONS,
@@ -56,6 +83,7 @@ export type {
   PersonalityMemoryLike,
   PersonalityPreferences,
   PersonalityStyle,
+  PreferredAddressMode,
   ResponseDetailPreference,
   SarcasmLevel,
   TemporaryToneOverride,

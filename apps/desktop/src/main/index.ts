@@ -805,6 +805,26 @@ function registerIpc(): void {
         bypassSpokenMode: z.boolean().optional(),
         debugDumpWav: z.boolean().optional(),
         purpose: z.string().max(40).optional(),
+        alreadyPrepared: z.boolean().optional(),
+        skipAddress: z.boolean().optional(),
+        addressAlreadyUsed: z.boolean().optional(),
+        skipSimplification: z.boolean().optional(),
+        origin: z
+          .enum(["ptt", "stream", "ack", "tool", "test_voice", "final"])
+          .optional(),
+        userMessage: z.string().max(2000).optional(),
+        toolHints: z
+          .array(
+            z.object({
+              tool: z.string().max(80).optional(),
+              message: z.string().max(400).optional(),
+              success: z.boolean().optional(),
+              errorCode: z.string().max(80).optional(),
+              data: z.record(z.unknown()).optional(),
+            }),
+          )
+          .max(12)
+          .optional(),
       })
       .safeParse(raw);
     if (!parsed.success) {

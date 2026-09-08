@@ -25,7 +25,7 @@ describe("local TTS contracts", () => {
     const src = readFileSync(join(__dirname, "tts-service.ts"), "utf8");
     assert.match(src, /tryKokoro/);
     assert.match(src, /fallback_to_gemini/);
-    assert.match(src, /buildSpeechResponse/);
+    assert.match(src, /prepareSpokenText/);
   });
 
   it("kokoro provider validates WAV RIFF header", () => {

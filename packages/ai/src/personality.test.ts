@@ -235,7 +235,7 @@ describe("refined Aurum personality", () => {
 
     const spoken = buildSpeechResponse(
       "Yes. Production is healthy. It finally decided to cooperate. Here is a long appendix with many details that should not all be spoken aloud in voice mode because brevity matters for TTS delivery.",
-      { maxChars: 120 },
+      { maxChars: 120, skipAddress: true },
     );
     assert.ok(spoken.length <= 130);
     assert.match(spoken, /Production is healthy/);
@@ -271,5 +271,16 @@ describe("refined Aurum personality", () => {
       parsePersonalityPreferences([]),
       DEFAULT_PERSONALITY_PREFERENCES,
     );
+    assert.equal(DEFAULT_PERSONALITY_PREFERENCES.preferredAddress, "sir");
+  });
+
+  it("parses preferred spoken address from memory", () => {
+    const prefs = parsePersonalityPreferences([
+      {
+        canonical_key: "preference:preferred_address",
+        content: "sir",
+      },
+    ]);
+    assert.equal(prefs.preferredAddress, "sir");
   });
 });

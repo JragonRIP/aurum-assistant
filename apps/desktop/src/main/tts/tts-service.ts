@@ -1,8 +1,13 @@
 /**
  * Central TTS service — routes to Kokoro (primary) or Gemini (optional fallback).
  * Single speech generation per request (never both).
+ * prepareSpokenText is the only spoken-form transform before Kokoro.
  */
-import { buildSpeechResponse } from "@aurum/ai";
+import {
+  prepareSpokenText,
+  type SpokenOrigin,
+  type SpokenToolHint,
+} from "@aurum/ai";
 import { appendVoiceLog } from "../voice-log";
 import type { DeviceCredential } from "../credentials";
 import { GeminiTtsProvider } from "./gemini-provider";
@@ -22,6 +27,13 @@ export type CentralSynthesizeOpts = {
   signal?: AbortSignal;
   /** Generation / turn id — stale results discarded by caller via VoicePlayback. */
   turnId?: number;
+  alreadyPrepared?: boolean;
+  skipAddress?: boolean;
+  addressAlreadyUsed?: boolean;
+  skipSimplification?: boolean;
+  origin?: SpokenOrigin;
+  userMessage?: string;
+  toolHints?: SpokenToolHint[];
 };
 
 export class TtsService {
@@ -51,8 +63,39 @@ export class TtsService {
     | (TtsSynthesizeFailure & { fallbackUsed: boolean })
   > {
     const settings = loadLocalTtsSettings();
-    const speechText = buildSpeechResponse(opts.text, {
-      pronunciation: settings.pronunciation,
+    const prepared = opts.alreadyPrepared
+      ? {
+          spoken: opts.text.trim(),
+          displayLength: opts.text.trim().length,
+          spokenLength: opts.text.trim().length,
+          addressApplied: false,
+          simplified: false,
+          pronunciationApplied: false,
+          prepareMs: 0,
+        }
+      : prepareSpokenText({
+          text: opts.text,
+          origin: opts.origin ?? "final",
+          turnId: opts.turnId,
+          toolHints: opts.toolHints,
+          pronunciation: settings.pronunciation,
+          skipAddress: opts.skipAddress,
+          addressAlreadyUsed: opts.addressAlreadyUsed,
+          skipSimplification: opts.skipSimplification,
+          userMessage: opts.userMessage,
+          logSpokenString: process.env.AURUM_LOG_SPOKEN === "1",
+        });
+    const speechText = prepared.spoken;
+    appendVoiceLog("VOICE_SPEECH", {
+      stage: "prepare",
+      origin: opts.origin ?? "final",
+      display_length: prepared.displayLength,
+      spoken_length: prepared.spokenLength,
+      address_applied: prepared.addressApplied,
+      simplified: prepared.simplified,
+      pronunciation_applied: prepared.pronunciationApplied,
+      prepare_ms: prepared.prepareMs,
+      has_sir: /\bsir\b/i.test(speechText),
     });
     if (!speechText) {
       return {
@@ -97,11 +140,17 @@ export class TtsService {
             fallback_used: false,
             cloud_tts_called: false,
             speech_text_length: speechText.length,
+            has_sir: /\bsir\b/i.test(speechText),
             audio_bytes: local.audioBytes,
             latency_ms: local.latencyMs,
             voice: local.voice ?? settings.kokoroVoice,
           });
-          return { ...local, fallbackUsed: false };
+          return {
+            ...local,
+            speechText,
+            fallbackUsed: false,
+            addressApplied: prepared.addressApplied,
+          };
         }
         if (!tryGemini || (settings.speechEngine === "local" && !settings.allowGeminiFallback)) {
           return { ...local, fallbackUsed: false };
@@ -142,7 +191,9 @@ export class TtsService {
         cloud_tts_called: true,
         ok: cloud.ok,
       });
-      return { ...cloud, fallbackUsed: tryKokoro };
+      return cloud.ok
+        ? { ...cloud, speechText, fallbackUsed: tryKokoro, addressApplied: prepared.addressApplied }
+        : { ...cloud, fallbackUsed: tryKokoro };
     }
 
     return {

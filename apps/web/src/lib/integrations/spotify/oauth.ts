@@ -1,32 +1,80 @@
 import { createHash, randomBytes } from "node:crypto";
 
-/** Spotify scopes for playback + library + playlist management */
-export const SPOTIFY_SCOPES = [
+/**
+ * Canonical Spotify PKCE scopes — shared by connect, reconnect, settings, and
+ * capability checks. Only scopes required by supported Aurum operations.
+ */
+export const SPOTIFY_PLAYBACK_SCOPES = [
   "user-read-playback-state",
   "user-modify-playback-state",
   "user-read-currently-playing",
-  "playlist-read-private",
+] as const;
+
+export const SPOTIFY_PLAYLIST_READ_SCOPES = ["playlist-read-private"] as const;
+
+export const SPOTIFY_PLAYLIST_WRITE_SCOPES = [
   "playlist-modify-private",
   "playlist-modify-public",
+] as const;
+
+export const SPOTIFY_LIBRARY_SCOPES = [
   "user-library-read",
   "user-library-modify",
-  "ugc-image-upload",
+] as const;
+
+export const SPOTIFY_COVER_SCOPES = ["ugc-image-upload"] as const;
+
+/** Spotify scopes for playback + library + playlist management */
+export const SPOTIFY_SCOPES = [
+  ...SPOTIFY_PLAYBACK_SCOPES,
+  ...SPOTIFY_PLAYLIST_READ_SCOPES,
+  ...SPOTIFY_PLAYLIST_WRITE_SCOPES,
+  ...SPOTIFY_LIBRARY_SCOPES,
+  ...SPOTIFY_COVER_SCOPES,
 ] as const;
 
 export type SpotifyScope = (typeof SPOTIFY_SCOPES)[number];
 
 export const SPOTIFY_SCOPES_STRING = SPOTIFY_SCOPES.join(" ");
 
+function grantedSet(granted: string[] | null | undefined): Set<string> {
+  return new Set((granted ?? []).map((s) => s.trim()).filter(Boolean));
+}
+
 /** Scopes required by Phase 4.2 that may be missing on older connections */
 export function missingSpotifyScopes(granted: string[] | null | undefined): string[] {
-  const set = new Set((granted ?? []).map((s) => s.trim()).filter(Boolean));
+  const set = grantedSet(granted);
   return SPOTIFY_SCOPES.filter((s) => !set.has(s));
+}
+
+export function missingPlaylistWriteScopes(
+  granted: string[] | null | undefined,
+): string[] {
+  const set = grantedSet(granted);
+  return SPOTIFY_PLAYLIST_WRITE_SCOPES.filter((s) => !set.has(s));
+}
+
+export function hasPlaylistWriteScopes(
+  granted: string[] | null | undefined,
+): boolean {
+  return missingPlaylistWriteScopes(granted).length === 0;
+}
+
+export function requiredPlaylistWriteScope(isPublic: boolean | null): string {
+  if (isPublic === true) return "playlist-modify-public";
+  return "playlist-modify-private";
 }
 
 export function needsSpotifyScopeUpgrade(
   granted: string[] | null | undefined,
 ): boolean {
   return missingSpotifyScopes(granted).length > 0;
+}
+
+export function needsPlaylistEditReconnect(
+  granted: string[] | null | undefined,
+): boolean {
+  return !hasPlaylistWriteScopes(granted);
 }
 /**
  * Spotify no longer accepts `localhost` aliases for OAuth redirect URIs.

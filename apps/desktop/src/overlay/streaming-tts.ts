@@ -4,7 +4,7 @@
  *
  * DOM-free module — safe to import from Electron main for validation.
  */
-import { buildSpeechResponse } from "@aurum/ai";
+import type { SpokenOrigin, SpokenToolHint } from "@aurum/ai";
 import {
   isSpeakableChunk,
   pullCompleteSentences,
@@ -30,6 +30,13 @@ export type SynthesizeFn = (opts: {
   text: string;
   purpose: string;
   bypassSpokenMode: boolean;
+  alreadyPrepared?: boolean;
+  skipAddress?: boolean;
+  addressAlreadyUsed?: boolean;
+  skipSimplification?: boolean;
+  origin?: SpokenOrigin;
+  userMessage?: string;
+  toolHints?: SpokenToolHint[];
   signal?: AbortSignal;
 }) => Promise<{
   ok: boolean;
@@ -41,6 +48,8 @@ export type SynthesizeFn = (opts: {
   provider?: string | null;
   audioBytes?: number;
   latencyMs?: number;
+  speechText?: string;
+  addressApplied?: boolean;
 }>;
 
 /** Minimal playback surface (implemented by VoicePlayback in the overlay). */
@@ -68,7 +77,10 @@ type PendingSynth = {
   turnId: number;
   chunkIndex: number;
   raw: string;
-  speechText: string;
+  kind: "ack" | "final";
+  skipAddress: boolean;
+  skipSimplification: boolean;
+  origin: SpokenOrigin;
 };
 
 export class StreamingTtsController {
@@ -81,6 +93,10 @@ export class StreamingTtsController {
   private active = false;
   private marks: StreamingLatencyMarks = {};
   private firstSentenceLogged = false;
+  private addressAlreadyUsed = false;
+  private ackEnqueued = false;
+  private userMessage = "";
+  private toolHints: SpokenToolHint[] = [];
   private playback: StreamingPlaybackSink;
   private synthesize: SynthesizeFn;
   private log: StreamingTtsLog;
@@ -107,7 +123,7 @@ export class StreamingTtsController {
   }
 
   /** Start a voice-origin speak turn (cancels prior). */
-  beginTurn(): number {
+  beginTurn(opts?: { userMessage?: string }): number {
     this.cancel();
     this.turnId += 1;
     this.active = true;
@@ -117,6 +133,10 @@ export class StreamingTtsController {
     this.synthActive = false;
     this.marks = {};
     this.firstSentenceLogged = false;
+    this.addressAlreadyUsed = false;
+    this.ackEnqueued = false;
+    this.userMessage = opts?.userMessage ?? "";
+    this.toolHints = [];
     this.abort = new AbortController();
     this.playback.beginTurn(this.turnId);
     this.log("stream_turn_begin", {
@@ -126,6 +146,47 @@ export class StreamingTtsController {
     return this.turnId;
   }
 
+  addressWasUsed(): boolean {
+    return this.addressAlreadyUsed;
+  }
+
+  addToolHint(hint: SpokenToolHint): void {
+    this.toolHints.push(hint);
+  }
+
+  /**
+   * Pre-action acknowledgement — starts TTS immediately, never blocks tools.
+   * One ack per turn. Skipped if final speech already started.
+   */
+  enqueueAcknowledgement(text: string): boolean {
+    const raw = text.trim();
+    if (!this.active || !raw || this.ackEnqueued) return false;
+    if (this.chunkIndex > 0 || this.synthActive) return false;
+    const applyAddress = !this.addressAlreadyUsed;
+    if (applyAddress) this.addressAlreadyUsed = true;
+    this.ackEnqueued = true;
+    const chunkIndex = this.chunkIndex;
+    this.chunkIndex += 1;
+    this.pendingSynth.unshift({
+      turnId: this.turnId,
+      chunkIndex,
+      raw,
+      kind: "ack",
+      skipAddress: !applyAddress,
+      skipSimplification: true,
+      origin: "ack",
+    });
+    this.log("ack_enqueued", {
+      channel: "VOICE_PTT",
+      turn_id: this.turnId,
+      chunk_index: chunkIndex,
+      ack_blocks_tools: false,
+      address_applied: applyAddress,
+    });
+    void this.pumpSynth();
+    return true;
+  }
+
   /** Barge-in / new PTT / Esc — drop everything. */
   cancel(): void {
     const tid = this.turnId;
@@ -133,6 +194,9 @@ export class StreamingTtsController {
     this.buffer = "";
     this.pendingSynth = [];
     this.synthActive = false;
+    this.addressAlreadyUsed = false;
+    this.ackEnqueued = false;
+    this.toolHints = [];
     try {
       this.abort?.abort();
     } catch {
@@ -184,10 +248,17 @@ export class StreamingTtsController {
       softFlushMinChars: 140,
     });
     this.buffer = remainder;
-    for (const raw of sentences) {
+    const lastIndex = sentences.length - 1;
+    for (let i = 0; i < sentences.length; i += 1) {
+      const raw = sentences[i]!;
       if (!isSpeakableChunk(raw)) continue;
-      const speechText = buildSpeechResponse(raw, { maxChars: 800 });
-      if (!speechText) continue;
+      const lastOfTurn = force && i === lastIndex && !this.buffer.trim();
+      const firstShort =
+        this.chunkIndex === 0 &&
+        raw.trim().length <= 160 &&
+        !this.addressAlreadyUsed;
+      const applyAddress = !this.addressAlreadyUsed && (firstShort || lastOfTurn);
+      if (applyAddress) this.addressAlreadyUsed = true;
       const now = Date.now();
       if (this.marks.agent_first_sentence_ready == null) {
         this.marks.agent_first_sentence_ready = now;
@@ -197,7 +268,7 @@ export class StreamingTtsController {
           channel: "VOICE_PTT",
           turn_id: this.turnId,
           t: now,
-          speech_text_length: speechText.length,
+          speech_text_length: raw.trim().length,
         });
       } else if (!this.firstSentenceLogged) {
         this.firstSentenceLogged = true;
@@ -206,14 +277,18 @@ export class StreamingTtsController {
         channel: "VOICE_TTS",
         turn_id: this.turnId,
         chunk_index: this.chunkIndex,
-        speech_text_length: speechText.length,
+        speech_text_length: raw.trim().length,
+        skip_address: !applyAddress,
         t: now,
       });
       this.pendingSynth.push({
         turnId: this.turnId,
         chunkIndex: this.chunkIndex,
         raw,
-        speechText,
+        kind: "final",
+        skipAddress: !applyAddress,
+        skipSimplification: false,
+        origin: "stream",
       });
       this.chunkIndex += 1;
     }
@@ -235,17 +310,29 @@ export class StreamingTtsController {
       channel: "VOICE_LOCAL",
       turn_id: next.turnId,
       chunk_index: next.chunkIndex,
-      speech_text_length: next.speechText.length,
+      speech_text_length: next.raw.trim().length,
+      kind: next.kind,
       t: reqAt,
     });
 
     try {
       const res = await this.synthesize({
-        text: next.speechText,
+        text: next.raw,
         purpose:
-          next.chunkIndex === 0 ? "ptt_sentence_first" : "ptt_sentence",
+          next.kind === "ack"
+            ? "ptt_ack"
+            : next.chunkIndex === 0
+              ? "ptt_sentence_first"
+              : "ptt_sentence",
         // Voice-origin PTT: skip cloud previewOnly gate (was a multi-second tax).
         bypassSpokenMode: true,
+        alreadyPrepared: false,
+        skipAddress: next.skipAddress,
+        addressAlreadyUsed: next.skipAddress,
+        skipSimplification: next.skipSimplification,
+        origin: next.origin,
+        userMessage: this.userMessage,
+        toolHints: this.toolHints,
         signal: this.abort?.signal,
       });
 

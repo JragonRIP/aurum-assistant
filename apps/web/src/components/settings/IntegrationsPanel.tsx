@@ -15,7 +15,9 @@ type IntegrationStatus = {
   scopes?: string[];
   requiredScopes?: string[];
   missingScopes?: string[];
+  missingPlaylistWriteScopes?: string[];
   needsScopeUpgrade?: boolean;
+  needsPlaylistEditReconnect?: boolean;
 };
 
 export function IntegrationsPanel() {
@@ -48,8 +50,9 @@ export function IntegrationsPanel() {
   useEffect(() => {
     const spotify = searchParams.get("spotify");
     if (spotify === "connected") {
-      setBanner("Spotify connected.");
-      void load();
+      void (async () => {
+        await load();
+      })();
     } else if (spotify === "error") {
       setBanner("Spotify connection failed. Try again.");
     }
@@ -99,11 +102,37 @@ export function IntegrationsPanel() {
   const spotify = items.find((i) => i.provider === "spotify");
   const connected = spotify?.status === "connected";
   const reconnect = spotify?.status === "reconnect_required";
-  const needsUpgrade = Boolean(spotify?.needsScopeUpgrade) || reconnect;
+  const needsPlaylistEdit = Boolean(spotify?.needsPlaylistEditReconnect);
+  const needsUpgrade =
+    Boolean(spotify?.needsScopeUpgrade) || reconnect || needsPlaylistEdit;
+  const grantedHasPlaylistWrite =
+    Array.isArray(spotify?.missingPlaylistWriteScopes) &&
+    spotify.missingPlaylistWriteScopes.length === 0;
+  const justConnected = searchParams.get("spotify") === "connected";
+  const showConnectedBanner =
+    justConnected && connected && grantedHasPlaylistWrite && !needsUpgrade;
 
   return (
     <div className="space-y-3">
-      {banner ? (
+      {needsPlaylistEdit ? (
+        <div className="rounded-md border border-[var(--aurum-gold,#c9a227)]/35 bg-[var(--aurum-gold,#c9a227)]/8 px-3 py-2.5">
+          <p className="text-[13px] text-[var(--aurum-text)]">
+            Spotify needs to be reconnected to enable playlist editing.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void connectSpotify()}
+            className="aurum-focus-ring mt-2 text-[13px] text-[var(--aurum-gold,#c9a227)] disabled:opacity-50"
+          >
+            Reconnect Spotify
+          </button>
+        </div>
+      ) : showConnectedBanner ? (
+        <p className="text-[13px] text-[var(--aurum-text-muted)]">
+          Spotify connected.
+        </p>
+      ) : banner ? (
         <p className="text-[13px] text-[var(--aurum-text-muted)]">{banner}</p>
       ) : null}
       {error ? (
@@ -152,14 +181,14 @@ export function IntegrationsPanel() {
           />
           {connected || needsUpgrade ? (
             <>
-              {needsUpgrade ? (
+              {needsUpgrade && !needsPlaylistEdit ? (
                 <button
                   type="button"
                   disabled={busy}
                   onClick={() => void connectSpotify()}
                   className="aurum-focus-ring text-[13px] text-[var(--aurum-gold,#c9a227)] disabled:opacity-50"
                 >
-                  Reconnect
+                  Reconnect Spotify
                 </button>
               ) : null}
               <button

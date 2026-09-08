@@ -1,4 +1,10 @@
 import type { ToolErrorCode } from "@aurum/tools";
+import {
+  classifySpotifyFailure,
+  parseSpotifyErrorBody,
+  toToolErrorCode,
+  type SpotifyFailureCode,
+} from "./errors";
 
 const SPOTIFY_API = "https://api.spotify.com/v1";
 
@@ -43,6 +49,8 @@ export class SpotifyApiError extends Error {
     message: string,
     readonly status?: number,
     readonly retryAfterMs?: number,
+    readonly reconnectRequired = false,
+    readonly spotifyErrorMessage?: string,
   ) {
     super(message);
     this.name = "SpotifyApiError";
@@ -67,36 +75,8 @@ function mapHttpError(
   status: number,
   bodyText: string,
   retryAfterHeader?: string | null,
+  action?: string,
 ): SpotifyApiError {
-  // Never include raw body tokens; sanitize message only
-  const lower = bodyText.toLowerCase();
-  if (status === 401) {
-    return new SpotifyApiError("TOKEN_EXPIRED", "Spotify authorization expired.", status);
-  }
-  if (status === 403) {
-    if (lower.includes("premium")) {
-      return new SpotifyApiError(
-        "PREMIUM_REQUIRED",
-        "Spotify Premium is required for playback control.",
-        status,
-      );
-    }
-    return new SpotifyApiError(
-      "PERMISSION_DENIED",
-      "Spotify rejected this action.",
-      status,
-    );
-  }
-  if (status === 404) {
-    if (lower.includes("device") || lower.includes("player")) {
-      return new SpotifyApiError(
-        "NO_ACTIVE_DEVICE",
-        "No active Spotify playback device.",
-        status,
-      );
-    }
-    return new SpotifyApiError("NOT_FOUND", "Spotify resource not found.", status);
-  }
   if (status === 429) {
     const retryAfterMs = parseRetryAfterMs(retryAfterHeader ?? null);
     const seconds =
@@ -110,17 +90,20 @@ function mapHttpError(
       retryAfterMs,
     );
   }
-  if (status >= 500) {
-    return new SpotifyApiError(
-      "PROVIDER_UNAVAILABLE",
-      "Spotify is temporarily unavailable.",
-      status,
-    );
-  }
+
+  const classified = classifySpotifyFailure({
+    httpStatus: status,
+    bodyText,
+    action,
+  });
+  const parsed = parseSpotifyErrorBody(bodyText);
   return new SpotifyApiError(
-    "EXECUTION_FAILED",
-    "Spotify request failed.",
+    toToolErrorCode(classified.code as SpotifyFailureCode),
+    classified.userMessage,
     status,
+    undefined,
+    classified.reconnectRequired,
+    parsed.message || undefined,
   );
 }
 
@@ -140,13 +123,14 @@ async function spotifyFetch(
   return res;
 }
 
-async function assertOk(res: Response): Promise<void> {
+async function assertOk(res: Response, action?: string): Promise<void> {
   if (res.ok || res.status === 204) return;
   const text = await res.text().catch(() => "");
   throw mapHttpError(
     res.status,
     text.slice(0, 400),
     res.headers.get("Retry-After"),
+    action,
   );
 }
 
@@ -578,6 +562,7 @@ export class SpotifyAdapter {
       name: string;
       public: boolean | null;
       ownerId: string | null;
+      collaborative: boolean;
     }>
   > {
     const max = Math.min(Math.max(limit, 1), 200);
@@ -588,6 +573,7 @@ export class SpotifyAdapter {
       name: string;
       public: boolean | null;
       ownerId: string | null;
+      collaborative: boolean;
     }> = [];
     let offset = 0;
     while (out.length < max) {
@@ -606,6 +592,7 @@ export class SpotifyAdapter {
           uri: string;
           name: string;
           public: boolean | null;
+          collaborative?: boolean;
           owner?: { id?: string };
         }>;
         next?: string | null;
@@ -619,6 +606,7 @@ export class SpotifyAdapter {
           name: p.name,
           public: p.public,
           ownerId: p.owner?.id ?? null,
+          collaborative: Boolean(p.collaborative),
         });
         if (out.length >= max) break;
       }
@@ -634,19 +622,23 @@ export class SpotifyAdapter {
     name: string;
     description: string | null;
     public: boolean | null;
+    collaborative: boolean;
+    ownerId: string | null;
     tracksTotal: number;
   }> {
     const res = await spotifyFetch(
       this.accessToken,
       `/playlists/${encodeURIComponent(playlistId)}`,
     );
-    await assertOk(res);
+    await assertOk(res, "get_playlist");
     const json = (await res.json()) as {
       id: string;
       uri: string;
       name: string;
       description: string | null;
       public: boolean | null;
+      collaborative?: boolean;
+      owner?: { id?: string };
       tracks?: { total?: number };
     };
     return {
@@ -655,6 +647,8 @@ export class SpotifyAdapter {
       name: json.name,
       description: json.description,
       public: json.public,
+      collaborative: Boolean(json.collaborative),
+      ownerId: json.owner?.id ?? null,
       tracksTotal: json.tracks?.total ?? 0,
     };
   }
@@ -751,7 +745,7 @@ export class SpotifyAdapter {
         `/playlists/${encodeURIComponent(playlistId)}/tracks`,
         { method: "POST", body: JSON.stringify({ uris: chunk }) },
       );
-      await assertOk(res);
+      await assertOk(res, "add_tracks");
     }
   }
 

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  classifySpokenAck,
+  spokenAcknowledgementText,
+} from "@aurum/ai";
+import {
   AurumPresence,
   type PresencePresentation,
   type PresenceState,
@@ -32,16 +36,64 @@ function shouldOfferShowFull(reply: string): boolean {
   return text.length >= 420 || lines >= 10;
 }
 
-function isSoftOverlayToolFailure(code?: string, tool?: string): boolean {
-  if (
-    code === "APPROVAL_REQUIRED" ||
+function extractAckAppName(event: {
+  tool?: string;
+  display?: { label?: string; detail?: string };
+  data?: Record<string, unknown>;
+}): string | null {
+  const fromData =
+    (typeof event.data?.name === "string" && event.data.name.trim()) ||
+    (typeof event.data?.app === "string" && event.data.app.trim()) ||
+    "";
+  if (fromData) return fromData;
+  const label = `${event.display?.label ?? ""} ${event.display?.detail ?? ""}`.trim();
+  const m = label.match(/(?:open(?:ing)?|clos(?:e|ing))\s+(.+?)(?:\.|$)/i);
+  return m?.[1]?.trim() || null;
+}
+
+function compactToolHintData(
+  data?: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (!data) return null;
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    "name",
+    "app",
+    "playlist",
+    "track",
+    "trackName",
+    "folder",
+    "folderName",
+  ]) {
+    const v = data[key];
+    if (typeof v === "string" && v.trim()) out[key] = v.trim();
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function isAwaitingUserOverlayFailure(code?: string): boolean {
+  return (
     code === "AMBIGUOUS_TRACK" ||
     code === "AMBIGUOUS_PLAYLIST" ||
     code === "AMBIGUOUS_MATCH" ||
+    code === "MISSING_SCOPE" ||
+    code === "AUTH_REVOKED" ||
+    code === "TOKEN_EXPIRED" ||
+    code === "NOT_CONNECTED"
+  );
+}
+
+function isSoftOverlayToolFailure(code?: string, tool?: string): boolean {
+  if (
+    isAwaitingUserOverlayFailure(code) ||
+    code === "APPROVAL_REQUIRED" ||
     code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
     code === "RATE_LIMITED" ||
     code === "PROVIDER_UNAVAILABLE" ||
-    code === "UNSUPPORTED"
+    code === "UNSUPPORTED" ||
+    code === "PLAYLIST_NOT_WRITABLE" ||
+    code === "TRANSIENT_FAILURE" ||
+    code === "SPOTIFY_REJECTED"
   ) {
     return true;
   }
@@ -163,6 +215,9 @@ export function OverlayApp() {
   const [awaitingUser, setAwaitingUser] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
   const inFlightTools = useRef(new Set<string>());
+  const toolsThisTurnRef = useRef<string[]>([]);
+  const ackSpokenRef = useRef(false);
+  const voiceUserMessageRef = useRef("");
   const awaitingApprovalRef = useRef(false);
   const awaitingUserRef = useRef(false);
   const replyRef = useRef("");
@@ -188,6 +243,13 @@ export function OverlayApp() {
             text: opts.text,
             purpose: opts.purpose,
             bypassSpokenMode: opts.bypassSpokenMode,
+            alreadyPrepared: opts.alreadyPrepared,
+            skipAddress: opts.skipAddress,
+            addressAlreadyUsed: opts.addressAlreadyUsed,
+            skipSimplification: opts.skipSimplification,
+            origin: opts.origin,
+            userMessage: opts.userMessage,
+            toolHints: opts.toolHints,
           });
           return {
             ok: Boolean(res?.ok),
@@ -230,6 +292,44 @@ export function OverlayApp() {
     streamingTtsRef.current?.cancel();
     playbackRef.current.stop();
     setSpeaking(false);
+  }
+
+  function maybeSpeakPreActionAck(event: StreamEvent): void {
+    if (!voiceOriginRef.current || ackSpokenRef.current) return;
+    const tool = event.tool;
+    if (!tool) return;
+    if (!toolsThisTurnRef.current.includes(tool)) {
+      toolsThisTurnRef.current.push(tool);
+    }
+    const kind = classifySpokenAck({
+      tool,
+      toolsThisTurn: toolsThisTurnRef.current,
+      userMessage: voiceUserMessageRef.current,
+    });
+    if (!kind) return;
+    ackSpokenRef.current = true;
+    const text = spokenAcknowledgementText(kind, {
+      appName: extractAckAppName(event),
+    });
+    const started = Date.now();
+    const enqueued = getStreamingTts().enqueueAcknowledgement(text);
+    console.info("[aurum:voice:speech]", {
+      stage: "ack_requested",
+      kind,
+      tool,
+      enqueued,
+      ack_blocks_tools: false,
+      enqueue_ms: Date.now() - started,
+    });
+    void window.aurumDesktop.voiceLog?.({
+      stage: "ack_requested",
+      fields: {
+        kind,
+        tool,
+        enqueued,
+        ack_blocks_tools: false,
+      },
+    });
   }
   const writeReply = useCallback((update: string | ((prev: string) => string)) => {
     setReply((prev) => {
@@ -493,6 +593,7 @@ export function OverlayApp() {
       if (awaitingApprovalRef.current) return;
       const key = event.tool ?? "tool";
       inFlightTools.current.add(key);
+      maybeSpeakPreActionAck(event);
       setActing(true);
       setExpanded(true);
       setResearching(
@@ -509,6 +610,14 @@ export function OverlayApp() {
     if (event.type === "tool_succeeded") {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
+      if (voiceOriginRef.current) {
+        getStreamingTts().addToolHint({
+          tool: event.tool,
+          message: event.display?.detail ?? event.display?.label,
+          success: true,
+          data: compactToolHintData(event.data),
+        });
+      }
       setActing(inFlightTools.current.size > 0);
       setResearching(
         [...inFlightTools.current].some((t) => isResearchTool(t)),
@@ -581,6 +690,15 @@ export function OverlayApp() {
     if (event.type === "tool_failed") {
       const key = event.tool ?? "tool";
       inFlightTools.current.delete(key);
+      if (voiceOriginRef.current) {
+        getStreamingTts().addToolHint({
+          tool: event.tool,
+          message: event.error?.message ?? event.display?.detail,
+          success: false,
+          errorCode: event.error?.code,
+          data: compactToolHintData(event.data),
+        });
+      }
       setActing(inFlightTools.current.size > 0);
       setResearching(
         [...inFlightTools.current].some((t) => isResearchTool(t)),
@@ -591,11 +709,7 @@ export function OverlayApp() {
         awaitingApprovalRef.current ||
         awaitingUserRef.current
       ) {
-        if (
-          event.error?.code === "AMBIGUOUS_TRACK" ||
-          event.error?.code === "AMBIGUOUS_PLAYLIST" ||
-          event.error?.code === "AMBIGUOUS_MATCH"
-        ) {
+        if (isAwaitingUserOverlayFailure(event.error?.code)) {
           setAwaitingUser(true);
           setError(null);
           setActivitySmooth(null);
@@ -605,7 +719,10 @@ export function OverlayApp() {
           }
         } else if (
           event.error?.code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
-          event.error?.code === "RATE_LIMITED"
+          event.error?.code === "RATE_LIMITED" ||
+          event.error?.code === "PLAYLIST_NOT_WRITABLE" ||
+          event.error?.code === "TRANSIENT_FAILURE" ||
+          event.error?.code === "SPOTIFY_REJECTED"
         ) {
           setError(null);
           setActivitySmooth(null);
@@ -793,6 +910,9 @@ export function OverlayApp() {
     }
 
     voiceOriginRef.current = opts.origin === "voice";
+    voiceUserMessageRef.current = text;
+    toolsThisTurnRef.current = [];
+    ackSpokenRef.current = false;
     cancelStreamingSpeech();
     setCommand("");
     writeReply("");
@@ -813,7 +933,7 @@ export function OverlayApp() {
     inFlightTools.current.clear();
 
     if (opts.origin === "voice") {
-      getStreamingTts().beginTurn();
+      getStreamingTts().beginTurn({ userMessage: text });
     }
 
     const handle = await window.aurumDesktop.startOverlayChat(text, {
@@ -883,6 +1003,8 @@ export function OverlayApp() {
     try {
       const res = await window.aurumDesktop.voiceSynthesize?.({
         text: "I need your approval.",
+        origin: "tool",
+        purpose: "approval_prompt",
       });
       if (!res?.ok || !res.audioBase64) return;
       setSpeaking(true);
@@ -923,6 +1045,8 @@ export function OverlayApp() {
         text,
         debugDumpWav: true,
         purpose: "ptt_final",
+        origin: "final",
+        userMessage: voiceUserMessageRef.current,
       });
       log("synth_status", {
         synth_status: res?.httpStatus ?? (res?.ok ? 200 : 0),

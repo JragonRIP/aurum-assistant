@@ -10,6 +10,14 @@ import {
 } from "./spoken-pronunciation";
 
 describe("spoken pronunciation", () => {
+  it("treats live before privacy as the adjective", () => {
+    const spoken = applySpokenPronunciation("This is a live privacy system.", {
+      preference: "americanized_british",
+    });
+    assert.match(spoken, /\blyve\b/i);
+    assert.match(spoken, /PRY-vuh-see/i);
+  });
+
   it("distinguishes live verb vs adjective", () => {
     const verb = applySpokenPronunciation("I live in Michigan.", {
       preference: "americanized_british",

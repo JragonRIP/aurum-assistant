@@ -523,7 +523,13 @@ function isSoftPlaybackOrClarification(code: string | undefined): boolean {
   return (
     isClarificationErrorCode(code) ||
     code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
-    code === "RATE_LIMITED"
+    code === "RATE_LIMITED" ||
+    code === "MISSING_SCOPE" ||
+    code === "AUTH_REVOKED" ||
+    code === "PLAYLIST_NOT_WRITABLE" ||
+    code === "TRANSIENT_FAILURE" ||
+    code === "SPOTIFY_REJECTED" ||
+    code === "TOKEN_EXPIRED"
   );
 }
 

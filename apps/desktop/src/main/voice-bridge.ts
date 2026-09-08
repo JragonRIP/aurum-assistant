@@ -3,7 +3,7 @@
  * TTS routes through TtsService (Kokoro local primary, Gemini optional fallback).
  */
 import fs from "node:fs";
-import { buildSpeechResponse } from "@aurum/ai";
+import type { SpokenOrigin, SpokenToolHint } from "@aurum/ai";
 import { shouldSpeakResponse } from "@aurum/shared";
 import {
   appendVoiceLog,
@@ -45,6 +45,7 @@ export type SynthesizeResult = {
   httpStatus?: number;
   provider?: string | null;
   fallbackUsed?: boolean;
+  addressApplied?: boolean;
 };
 
 function mapAuthFailure(status: number, data: { error?: string; code?: string }) {
@@ -148,7 +149,7 @@ export class VoiceBridge {
     voiceEnabled: boolean | null;
     code?: string;
   }> {
-    const speechText = buildSpeechResponse(opts.text);
+    const speechText = opts.text.trim();
     if (opts.bypassSpokenMode) {
       return {
         skip: false,
@@ -228,6 +229,13 @@ export class VoiceBridge {
     debugDumpWav?: boolean;
     purpose?: string;
     signal?: AbortSignal;
+    alreadyPrepared?: boolean;
+    skipAddress?: boolean;
+    addressAlreadyUsed?: boolean;
+    skipSimplification?: boolean;
+    origin?: SpokenOrigin;
+    userMessage?: string;
+    toolHints?: SpokenToolHint[];
   }): Promise<SynthesizeResult> {
     const started = Date.now();
     const purpose = opts.purpose ?? "speak";
@@ -265,10 +273,17 @@ export class VoiceBridge {
     }
 
     const result = await this.tts.synthesize({
-      text: eligibility.speechText || opts.text,
+      text: opts.text,
       voice: opts.voice,
       bypassSpokenMode: opts.bypassSpokenMode,
       signal: opts.signal,
+      alreadyPrepared: opts.alreadyPrepared,
+      skipAddress: opts.skipAddress,
+      addressAlreadyUsed: opts.addressAlreadyUsed,
+      skipSimplification: opts.skipSimplification,
+      origin: opts.origin,
+      userMessage: opts.userMessage,
+      toolHints: opts.toolHints,
     });
 
     if (!result.ok) {
@@ -311,6 +326,9 @@ export class VoiceBridge {
       audio_mime: "audio/wav",
       playable_mime: "audio/wav",
       speech_text_length: result.speechText.length,
+      has_sir: /\bsir\b/i.test(result.speechText),
+      address_applied:
+        "addressApplied" in result ? Boolean(result.addressApplied) : null,
       spoken_mode: eligibility.spokenMode,
       voice_enabled: eligibility.voiceEnabled,
       wav_ok: wavInfo.ok,
@@ -351,6 +369,8 @@ export class VoiceBridge {
       httpStatus: 200,
       provider: result.provider,
       fallbackUsed: result.fallbackUsed,
+      addressApplied:
+        "addressApplied" in result ? Boolean(result.addressApplied) : false,
     };
   }
 }

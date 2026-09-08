@@ -19,6 +19,45 @@ describe("overlay execution ownership", () => {
     assert.equal(shouldShowIdleForTurn(turn), false);
   });
 
+  it("MISSING_SCOPE is WAITING_FOR_USER, not ERROR", () => {
+    let turn = beginOverlayTurn(emptyOverlayTurn(), {
+      executionId: "11111111-1111-4111-8111-111111111111",
+      conversationId: null,
+      inputMode: "voice",
+    });
+    turn = reduceOverlayTurn(turn, {
+      type: "tool_failed",
+      tool: "spotify_add_tracks_to_playlist",
+      error: {
+        code: "MISSING_SCOPE",
+        message: "I need you to reconnect Spotify once so Aurum can edit playlists.",
+      },
+    });
+    assert.equal(turn.status, "WAITING_FOR_USER");
+    assert.equal(turn.error, null);
+    assert.match(turn.reply, /reconnect Spotify/i);
+  });
+
+  it("PLAYLIST_NOT_WRITABLE is a warning, not FAILED", () => {
+    let turn = beginOverlayTurn(emptyOverlayTurn(), {
+      executionId: "11111111-1111-4111-8111-111111111111",
+      conversationId: null,
+      inputMode: "text",
+    });
+    turn = reduceOverlayTurn(turn, {
+      type: "tool_failed",
+      tool: "spotify_add_tracks_to_playlist",
+      error: {
+        code: "PLAYLIST_NOT_WRITABLE",
+        message: "I found the playlist, but this Spotify account can't edit it.",
+      },
+    });
+    turn = reduceOverlayTurn(turn, { type: "done" });
+    assert.equal(turn.status, "COMPLETED");
+    assert.equal(turn.error, null);
+    assert.match(turn.warning ?? "", /can't edit it/i);
+  });
+
   it("web provider failure is soft and does not force FAILED", () => {
     assert.equal(
       isOverlaySoftToolFailure({

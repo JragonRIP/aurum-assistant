@@ -68,7 +68,7 @@ export const BUILTIN_PRONUNCIATIONS: PronunciationEntry[] = [
     term: "live",
     spoken: "lyve",
     when:
-      /(?:\b(?:a|the|this|that|our|your|go|going|went|going\s+to)\s+)<<TERM>>\b|<<TERM>>\s+(?:voice|system|stream|music|show|feed|broadcast|event|demo|update|session|mode|audio|video|chat|call)\b/,
+      /(?:\b(?:a|the|this|that|our|your|go|going|went|going\s+to)\s+)<<TERM>>\b|<<TERM>>\s+(?:voice|privacy|system|stream|music|show|feed|broadcast|event|demo|update|session|mode|audio|video|chat|call)\b/,
     modes: ["natural", "british", "americanized_british"],
   },
   // Schedule / calendar (British “shedule” vs American “skedule”)

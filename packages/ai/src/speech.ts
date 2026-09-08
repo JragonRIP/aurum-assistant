@@ -1,173 +1,52 @@
 /**
- * Deterministic spoken-form normalization for TTS.
- * No second model call. Display / stored text is never passed through here for UI.
+ * Compatibility spoken-form helpers.
+ * All assistant TTS must go through prepareSpokenText — this wrapper keeps
+ * existing call sites on one pipeline.
  */
+import { prepareSpokenText } from "./prepare-spoken";
 import {
-  applySpokenPronunciation,
-  type PronunciationEntry,
-  type PronunciationPreference,
-} from "./spoken-pronunciation";
+  speakClockTimes,
+  speakSimpleDates,
+} from "./speech-text";
+import type { PronunciationEntry, PronunciationPreference } from "./spoken-pronunciation";
+import type { PreferredAddress, PreferredAddressMode } from "./spoken-address";
 
 export type BuildSpeechOptions = {
   maxChars?: number;
-  /** Pronunciation preference for local/cloud TTS (default americanized_british). */
   pronunciation?: PronunciationPreference;
-  /** Optional user dictionary overrides. */
   customPronunciations?: PronunciationEntry[];
-  /** Skip pronunciation layer (tests / raw). */
   skipPronunciation?: boolean;
+  preferredAddress?: PreferredAddress | PreferredAddressMode;
+  skipAddress?: boolean;
+  skipSimplification?: boolean;
+  addressAlreadyUsed?: boolean;
+  alreadyPrepared?: boolean;
+  detailMode?: "concise" | "read_all";
+  userMessage?: string;
+  origin?: "ptt" | "stream" | "ack" | "tool" | "test_voice" | "final";
+  logSpokenString?: boolean;
 };
 
 export function buildSpeechResponse(
   text: string,
   opts?: BuildSpeechOptions,
 ): string {
-  const max = opts?.maxChars ?? 320;
-  let t = text.replace(/\r\n/g, "\n").trim();
-  if (!t) return "";
-
-  // Drop markdown / code / URLs
-  t = t
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
-    .replace(/\[([^\]]+)]\((https?:\/\/[^)]+)\)/g, "$1")
-    .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*\d+\.\s+/gm, "")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/__([^_]+)__/g, "$1")
-    .replace(/_([^_]+)_/g, "$1")
-    .replace(/\n{2,}/g, ". ")
-    .replace(/\n/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-
-  // Soften symbols that sound awkward when read aloud
-  t = t
-    .replace(/\s*[/|]\s*/g, " ")
-    .replace(/&/g, " and ")
-    .replace(/@/g, " at ")
-    .replace(/°/g, " degrees ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-
-  t = speakClockTimes(t);
-  t = speakSimpleDates(t);
-
-  if (!opts?.skipPronunciation) {
-    t = applySpokenPronunciation(t, {
-      preference: opts?.pronunciation ?? "americanized_british",
-      custom: opts?.customPronunciations,
-    });
-  }
-
-  if (t.length <= max) return t;
-
-  const parts = t.split(/(?<=[.!?])\s+/);
-  let out = "";
-  for (const p of parts) {
-    const next = out ? `${out} ${p}` : p;
-    if (next.length > max) break;
-    out = next;
-    if (out.length >= Math.min(120, max)) break;
-  }
-  if (out) return out;
-  return `${t.slice(0, max - 1).trim()}…`;
+  if (opts?.alreadyPrepared) return text.trim();
+  return prepareSpokenText({
+    text,
+    maxChars: opts?.maxChars,
+    pronunciation: opts?.pronunciation,
+    customPronunciations: opts?.customPronunciations,
+    skipPronunciation: opts?.skipPronunciation,
+    preferredAddress: opts?.preferredAddress,
+    skipAddress: opts?.skipAddress,
+    skipSimplification: opts?.skipSimplification,
+    addressAlreadyUsed: opts?.addressAlreadyUsed,
+    detailMode: opts?.detailMode,
+    userMessage: opts?.userMessage,
+    origin: opts?.origin ?? "final",
+    logSpokenString: opts?.logSpokenString,
+  }).spoken;
 }
 
-/** "3:30 PM" → "three-thirty"; "4:00" → "four o'clock" (12h when am/pm present). */
-export function speakClockTimes(text: string): string {
-  return text.replace(
-    /\b([01]?\d|2[0-3]):([0-5]\d)\s*(a\.?m\.?|p\.?m\.?)?\b/gi,
-    (_full, hRaw: string, mRaw: string, meridiem?: string) => {
-      let hour = Number(hRaw);
-      const minute = Number(mRaw);
-      const mer = meridiem?.replace(/\./g, "").toLowerCase() ?? null;
-      if (mer === "pm" && hour < 12) hour += 12;
-      if (mer === "am" && hour === 12) hour = 0;
-      const displayHour = ((hour + 11) % 12) + 1;
-      const hourWord = NUMBER_WORDS[displayHour] ?? String(displayHour);
-      if (minute === 0) {
-        return `${hourWord} o'clock`;
-      }
-      if (minute < 10) {
-        return `${hourWord} oh ${NUMBER_WORDS[minute] ?? minute}`;
-      }
-      const minuteWord =
-        NUMBER_WORDS[minute] ??
-        `${NUMBER_WORDS[Math.floor(minute / 10) * 10]}-${NUMBER_WORDS[minute % 10]}`;
-      return `${hourWord}-${minuteWord}`;
-    },
-  );
-}
-
-/** Light-touch date phrasing for common numeric dates. */
-export function speakSimpleDates(text: string): string {
-  return text.replace(
-    /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/g,
-    (_full, m: string, d: string, y?: string) => {
-      const month = MONTH_NAMES[Number(m)] ?? m;
-      const day = Number(d);
-      const dayWord = NUMBER_WORDS[day] ?? String(day);
-      if (y) {
-        return `${month} ${dayWord}, ${y}`;
-      }
-      return `${month} ${dayWord}`;
-    },
-  );
-}
-
-const NUMBER_WORDS: Record<number, string> = {
-  0: "zero",
-  1: "one",
-  2: "two",
-  3: "three",
-  4: "four",
-  5: "five",
-  6: "six",
-  7: "seven",
-  8: "eight",
-  9: "nine",
-  10: "ten",
-  11: "eleven",
-  12: "twelve",
-  13: "thirteen",
-  14: "fourteen",
-  15: "fifteen",
-  16: "sixteen",
-  17: "seventeen",
-  18: "eighteen",
-  19: "nineteen",
-  20: "twenty",
-  21: "twenty-one",
-  22: "twenty-two",
-  23: "twenty-three",
-  24: "twenty-four",
-  25: "twenty-five",
-  26: "twenty-six",
-  27: "twenty-seven",
-  28: "twenty-eight",
-  29: "twenty-nine",
-  30: "thirty",
-  31: "thirty-one",
-  40: "forty",
-  50: "fifty",
-};
-
-const MONTH_NAMES: Record<number, string> = {
-  1: "January",
-  2: "February",
-  3: "March",
-  4: "April",
-  5: "May",
-  6: "June",
-  7: "July",
-  8: "August",
-  9: "September",
-  10: "October",
-  11: "November",
-  12: "December",
-};
+export { speakClockTimes, speakSimpleDates };

@@ -15,14 +15,28 @@ export function isClarificationErrorCode(code: string | undefined): boolean {
   );
 }
 
+/** Reconnect / user action required — overlay WAITING_FOR_USER, not ERROR. */
+export function isAwaitingUserToolErrorCode(code: string | undefined): boolean {
+  return (
+    isClarificationErrorCode(code) ||
+    code === "MISSING_SCOPE" ||
+    code === "AUTH_REVOKED" ||
+    code === "TOKEN_EXPIRED" ||
+    code === "NOT_CONNECTED"
+  );
+}
+
 /** Soft failures that must not flash ERROR / invent hard failure copy. */
 export function isSoftToolErrorCode(code: string | undefined): boolean {
   return (
-    isClarificationErrorCode(code) ||
+    isAwaitingUserToolErrorCode(code) ||
     code === "PLAYBACK_CHANGE_NOT_CONFIRMED" ||
     code === "RATE_LIMITED" ||
     code === "PROVIDER_UNAVAILABLE" ||
-    code === "UNSUPPORTED"
+    code === "UNSUPPORTED" ||
+    code === "PLAYLIST_NOT_WRITABLE" ||
+    code === "TRANSIENT_FAILURE" ||
+    code === "SPOTIFY_REJECTED"
   );
 }
 
@@ -400,7 +414,7 @@ export async function executeToolCall(options: {
         executionMs: durationMs,
         generation: ctx.generationId,
       });
-    } else if (isClarificationErrorCode(result.error?.code)) {
+    } else if (isAwaitingUserToolErrorCode(result.error?.code)) {
       await ctx.data.toolRuns.complete(executionId, {
         status: "failed",
         errorCode: result.error?.code ?? "AMBIGUOUS_MATCH",

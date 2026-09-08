@@ -13,8 +13,18 @@ import {
   SPOTIFY_SCOPES_STRING,
   needsSpotifyScopeUpgrade,
   missingSpotifyScopes,
+  missingPlaylistWriteScopes,
+  needsPlaylistEditReconnect,
+  hasPlaylistWriteScopes,
+  requiredPlaylistWriteScope,
 } from "./oauth";
 import { SpotifyAdapter, SpotifyApiError } from "./adapter";
+import {
+  classifySpotifyFailure,
+  logSpotifyAction,
+  userMessageForSpotifyCode,
+} from "./errors";
+import { assessPlaylistWritability } from "./playlist-access";
 import {
   createIntegrationReference,
   resolveIntegrationReference,
@@ -70,7 +80,9 @@ export type SpotifyConnectionPublic = {
   scopes: string[];
   requiredScopes: string[];
   missingScopes: string[];
+  missingPlaylistWriteScopes: string[];
   needsScopeUpgrade: boolean;
+  needsPlaylistEditReconnect: boolean;
   configured: boolean;
 };
 
@@ -96,6 +108,41 @@ type CredentialRow = {
   token_type: string;
 };
 
+function playlistFailureResult(opts: {
+  code:
+    | "MISSING_SCOPE"
+    | "PLAYLIST_NOT_WRITABLE"
+    | "AUTH_REVOKED"
+    | "TRACK_NOT_FOUND"
+    | "SPOTIFY_REJECTED"
+    | "TRANSIENT_FAILURE"
+    | "TOKEN_EXPIRED";
+  reconnectRequired: boolean;
+  extra?: Record<string, unknown>;
+}): ToolResult {
+  return {
+    success: false,
+    error: {
+      code: opts.code,
+      message: userMessageForSpotifyCode(opts.code),
+    },
+    activityLabel:
+      opts.code === "MISSING_SCOPE" ||
+      opts.code === "AUTH_REVOKED" ||
+      opts.code === "TOKEN_EXPIRED"
+        ? "Reconnect Spotify"
+        : opts.code === "PLAYLIST_NOT_WRITABLE"
+          ? "Playlist not editable"
+          : "Spotify playlist change",
+    data: {
+      ok: false,
+      code: opts.code,
+      reconnectRequired: opts.reconnectRequired,
+      ...opts.extra,
+    },
+  };
+}
+
 function toToolError(err: unknown): ToolResult {
   if (
     (err instanceof DOMException && err.name === "AbortError") ||
@@ -108,6 +155,29 @@ function toToolError(err: unknown): ToolResult {
     };
   }
   if (err instanceof SpotifyApiError) {
+    const reconnectRequired =
+      err.reconnectRequired ||
+      err.code === "MISSING_SCOPE" ||
+      err.code === "AUTH_REVOKED" ||
+      err.code === "TOKEN_EXPIRED";
+    if (
+      err.code === "MISSING_SCOPE" ||
+      err.code === "PLAYLIST_NOT_WRITABLE" ||
+      err.code === "AUTH_REVOKED" ||
+      err.code === "TRACK_NOT_FOUND" ||
+      err.code === "SPOTIFY_REJECTED" ||
+      err.code === "TRANSIENT_FAILURE" ||
+      err.code === "TOKEN_EXPIRED"
+    ) {
+      return playlistFailureResult({
+        code: err.code,
+        reconnectRequired,
+        extra: {
+          httpStatus: err.status ?? null,
+          spotifyErrorMessage: err.spotifyErrorMessage ?? null,
+        },
+      });
+    }
     return {
       success: false,
       error: { code: err.code, message: err.message },
@@ -116,23 +186,28 @@ function toToolError(err: unknown): ToolResult {
         err.code === "RATE_LIMITED"
           ? {
               confirmation: "RATE_LIMITED",
+              reconnectRequired: false,
               ...(err.retryAfterMs != null
                 ? { retryAfterMs: err.retryAfterMs }
                 : {}),
             }
           : err.code === "NO_ACTIVE_DEVICE"
-            ? { confirmation: "NO_DEVICE" }
-            : { confirmation: "FAILED" },
+            ? { confirmation: "NO_DEVICE", reconnectRequired: false }
+            : { confirmation: "FAILED", reconnectRequired },
     };
   }
   return {
     success: false,
     error: {
-      code: "EXECUTION_FAILED",
-      message: err instanceof Error ? err.message : "Spotify action failed.",
+      code: "TRANSIENT_FAILURE",
+      message: userMessageForSpotifyCode("TRANSIENT_FAILURE"),
     },
     activityLabel: "Spotify action failed",
-    data: { confirmation: "FAILED" },
+    data: {
+      ok: false,
+      code: "TRANSIENT_FAILURE",
+      reconnectRequired: false,
+    },
   };
 }
 
@@ -169,7 +244,9 @@ export async function getSpotifyConnectionPublic(
       scopes: [],
       requiredScopes: [...SPOTIFY_SCOPES],
       missingScopes: [...SPOTIFY_SCOPES],
+      missingPlaylistWriteScopes: [...missingPlaylistWriteScopes([])],
       needsScopeUpgrade: false,
+      needsPlaylistEditReconnect: false,
       configured,
     };
   }
@@ -177,25 +254,33 @@ export async function getSpotifyConnectionPublic(
   const row = data as IntegrationRow;
   const scopes = row.scopes ?? [];
   const missing = missingSpotifyScopes(scopes);
+  const missingPlaylistWrite = missingPlaylistWriteScopes(scopes);
+  const playlistEditReconnect = needsPlaylistEditReconnect(scopes);
   const needsUpgrade =
     row.status === "connected" && needsSpotifyScopeUpgrade(scopes);
+  const reconnectRequired =
+    row.status === "reconnect_required" || needsUpgrade;
   return {
     provider: "spotify",
     name: "Spotify",
     status: configured
-      ? needsUpgrade
+      ? reconnectRequired
         ? "reconnect_required"
         : (row.status as SpotifyConnectionStatus)
       : "not_configured",
     accountLabel: row.account_label,
     connectedAt: row.connected_at,
-    lastError: needsUpgrade
-      ? "New Spotify permissions required — reconnect to upgrade."
-      : row.last_error,
+    lastError: playlistEditReconnect
+      ? "Spotify needs to be reconnected to enable playlist editing."
+      : needsUpgrade
+        ? "New Spotify permissions required — reconnect to upgrade."
+        : row.last_error,
     scopes,
     requiredScopes: [...SPOTIFY_SCOPES],
     missingScopes: missing,
+    missingPlaylistWriteScopes: missingPlaylistWrite,
     needsScopeUpgrade: needsUpgrade,
+    needsPlaylistEditReconnect: playlistEditReconnect,
     configured,
   };
 }
@@ -485,6 +570,7 @@ async function refreshAccessToken(opts: {
     access_token: string;
     refresh_token?: string;
     expires_in?: number;
+    scope?: string;
   };
 
   const expiresAt = json.expires_in
@@ -506,6 +592,18 @@ async function refreshAccessToken(opts: {
     .update(patch)
     .eq("integration_id", opts.integrationId)
     .eq("user_id", opts.userId);
+
+  if (json.scope) {
+    const scopes = json.scope.split(" ").filter(Boolean);
+    await service
+      .from("integrations")
+      .update({
+        scopes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", opts.integrationId)
+      .eq("user_id", opts.userId);
+  }
 
   return { accessToken: json.access_token, expiresAt };
 }
@@ -623,10 +721,11 @@ export async function runSpotifyTool(opts: {
       };
     }
 
-    const { accessToken } = await ensureAccessToken({
+    const { accessToken, integration } = await ensureAccessToken({
       supabase: opts.supabase,
       userId: opts.userId,
     });
+    const grantedScopes = integration.scopes ?? [];
     const adapter = new SpotifyAdapter(accessToken);
 
     // At most one Windows open_application per play_* recovery sequence
@@ -1169,6 +1268,8 @@ export async function runSpotifyTool(opts: {
             name: playlist.name,
             description: playlist.description,
             public: playlist.public,
+            collaborative: playlist.collaborative,
+            ownerId: playlist.ownerId,
             tracksTotal: playlist.tracksTotal,
           },
           message: playlist.name,
@@ -1982,6 +2083,20 @@ export async function runSpotifyTool(opts: {
       }
 
       case "create_playlist": {
+        const missingWrite = missingPlaylistWriteScopes(grantedScopes);
+        if (missingWrite.length > 0) {
+          logSpotifyAction({
+            action: "create_playlist",
+            requiredScope: missingWrite,
+            tokenScopes: grantedScopes,
+            code: "MISSING_SCOPE",
+          });
+          return playlistFailureResult({
+            code: "MISSING_SCOPE",
+            reconnectRequired: true,
+            extra: { missingScopes: missingWrite },
+          });
+        }
         const name = String(opts.input.name ?? "").trim();
         if (!name) {
           return {
@@ -2041,19 +2156,11 @@ export async function runSpotifyTool(opts: {
           ? (integ!.scopes as string[])
           : [];
         if (!granted.includes("ugc-image-upload")) {
-          return {
-            success: false,
-            error: {
-              code: "PERMISSION_DENIED",
-              message:
-                "Spotify needs a reconnect to grant playlist cover upload permission.",
-            },
-            data: {
-              needsScopeUpgrade: true,
-              missingScope: "ugc-image-upload",
-            },
-            activityLabel: "Reconnect Spotify",
-          };
+          return playlistFailureResult({
+            code: "MISSING_SCOPE",
+            reconnectRequired: true,
+            extra: { missingScopes: ["ugc-image-upload"] },
+          });
         }
         const pref = await resolveIntegrationReference({
           supabase: opts.supabase,
@@ -2179,6 +2286,24 @@ export async function runSpotifyTool(opts: {
 
       case "add_playlist_items":
       case "remove_playlist_items": {
+        const writeAction =
+          opts.action === "add_playlist_items" ? "add_tracks" : "remove_tracks";
+        const missingWrite = missingPlaylistWriteScopes(grantedScopes);
+        if (missingWrite.length > 0) {
+          logSpotifyAction({
+            action: writeAction,
+            requiredScope: missingWrite,
+            playlistIdPresent: Boolean(opts.input.playlistReference),
+            tokenScopes: grantedScopes,
+            code: "MISSING_SCOPE",
+          });
+          return playlistFailureResult({
+            code: "MISSING_SCOPE",
+            reconnectRequired: true,
+            extra: { missingScopes: missingWrite },
+          });
+        }
+
         const pref = await resolveIntegrationReference({
           supabase: opts.supabase,
           userId: opts.userId,
@@ -2187,6 +2312,12 @@ export async function runSpotifyTool(opts: {
           kind: "playlist",
         });
         if (!pref) {
+          logSpotifyAction({
+            action: writeAction,
+            playlistIdPresent: false,
+            tokenScopes: grantedScopes,
+            code: "NOT_FOUND",
+          });
           return {
             success: false,
             error: {
@@ -2195,6 +2326,75 @@ export async function runSpotifyTool(opts: {
             },
           };
         }
+
+        let currentUserId: string | null = null;
+        try {
+          currentUserId = await adapter.getCurrentUserId();
+        } catch {
+          currentUserId = integration.external_account_id;
+        }
+
+        let playlistMeta: {
+          ownerId: string | null;
+          collaborative: boolean;
+          public: boolean | null;
+          name: string;
+        } | null = null;
+        try {
+          const playlist = await adapter.getPlaylist(pref.provider_id);
+          playlistMeta = {
+            ownerId: playlist.ownerId,
+            collaborative: playlist.collaborative,
+            public: playlist.public,
+            name: playlist.name,
+          };
+        } catch (err) {
+          if (err instanceof SpotifyApiError) {
+            logSpotifyAction({
+              action: writeAction,
+              httpStatus: err.status ?? null,
+              spotifyErrorMessage: err.spotifyErrorMessage ?? err.message,
+              playlistIdPresent: true,
+              tokenScopes: grantedScopes,
+              code: err.code,
+            });
+            throw err;
+          }
+        }
+
+        const access = assessPlaylistWritability({
+          ownerId: playlistMeta?.ownerId ??
+            (typeof pref.payload?.ownerId === "string"
+              ? pref.payload.ownerId
+              : null),
+          currentUserId,
+          collaborative: playlistMeta?.collaborative ?? false,
+        });
+        const requiredScope = requiredPlaylistWriteScope(
+          playlistMeta?.public ?? null,
+        );
+
+        if (!access.writable) {
+          logSpotifyAction({
+            action: writeAction,
+            requiredScope,
+            playlistIdPresent: true,
+            playlistOwnerMatchesUser: access.ownerMatchesUser,
+            collaborative: access.collaborative,
+            tokenScopes: grantedScopes,
+            code: "PLAYLIST_NOT_WRITABLE",
+          });
+          return playlistFailureResult({
+            code: "PLAYLIST_NOT_WRITABLE",
+            reconnectRequired: false,
+            extra: {
+              playlist: playlistMeta?.name ?? pref.label,
+              ownerMatchesUser: access.ownerMatchesUser,
+              collaborative: access.collaborative,
+            },
+          });
+        }
+
         const refs = Array.isArray(opts.input.trackReferences)
           ? opts.input.trackReferences
           : [];
@@ -2216,37 +2416,99 @@ export async function runSpotifyTool(opts: {
           else missing += 1;
         }
         if (uris.length === 0) {
-          return {
-            success: false,
-            error: {
-              code: "TRACK_NOT_FOUND",
-              message: "No valid trusted track references.",
-            },
-          };
+          logSpotifyAction({
+            action: writeAction,
+            requiredScope,
+            playlistIdPresent: true,
+            playlistOwnerMatchesUser: access.ownerMatchesUser,
+            collaborative: access.collaborative,
+            tokenScopes: grantedScopes,
+            code: "TRACK_NOT_FOUND",
+          });
+          return playlistFailureResult({
+            code: "TRACK_NOT_FOUND",
+            reconnectRequired: false,
+          });
         }
-        if (opts.action === "add_playlist_items") {
-          await adapter.addPlaylistItems(pref.provider_id, uris);
+        try {
+          if (opts.action === "add_playlist_items") {
+            await adapter.addPlaylistItems(pref.provider_id, uris);
+            logSpotifyAction({
+              action: writeAction,
+              httpStatus: 201,
+              requiredScope,
+              playlistIdPresent: true,
+              playlistOwnerMatchesUser: access.ownerMatchesUser,
+              collaborative: access.collaborative,
+              tokenScopes: grantedScopes,
+              code: "OK",
+            });
+            return {
+              success: true,
+              data: {
+                added: uris.length,
+                skippedInvalid: missing,
+                dedupedFrom: refs.length,
+                ownerMatchesUser: access.ownerMatchesUser,
+              },
+              message:
+                missing > 0
+                  ? `Added ${uris.length} track(s) to ${pref.label}. ${missing} reference(s) were invalid.`
+                  : `Added ${uris.length} track(s) to ${pref.label}.`,
+              activityLabel: `Adding ${uris.length} tracks`,
+            };
+          }
+          await adapter.removePlaylistItems(pref.provider_id, uris);
           return {
             success: true,
-            data: {
-              added: uris.length,
-              skippedInvalid: missing,
-              dedupedFrom: refs.length,
-            },
-            message:
-              missing > 0
-                ? `Added ${uris.length} track(s) to ${pref.label}. ${missing} reference(s) were invalid.`
-                : `Added ${uris.length} track(s) to ${pref.label}.`,
-            activityLabel: `Adding ${uris.length} tracks`,
+            data: { removed: uris.length },
+            message: `Removed ${uris.length} track(s) from ${pref.label}.`,
+            activityLabel: `Removing ${uris.length} tracks`,
           };
+        } catch (err) {
+          if (err instanceof SpotifyApiError) {
+            const classified = classifySpotifyFailure({
+              httpStatus: err.status ?? 0,
+              bodyText: err.spotifyErrorMessage ?? err.message,
+              action: writeAction,
+              playlistIdPresent: true,
+              playlistOwnerMatchesUser: access.ownerMatchesUser,
+              collaborative: access.collaborative,
+              grantedScopes,
+              requiredScopes: [requiredScope],
+            });
+            logSpotifyAction({
+              action: writeAction,
+              httpStatus: classified.httpStatus,
+              spotifyErrorStatus: classified.spotifyErrorStatus,
+              spotifyErrorMessage: classified.spotifyErrorMessage,
+              requiredScope,
+              playlistIdPresent: true,
+              playlistOwnerMatchesUser: access.ownerMatchesUser,
+              collaborative: access.collaborative,
+              tokenScopes: grantedScopes,
+              code: classified.code,
+            });
+            return playlistFailureResult({
+              code:
+                classified.code === "PREMIUM_REQUIRED"
+                  ? "SPOTIFY_REJECTED"
+                  : classified.code === "NOT_FOUND" ||
+                      classified.code === "NO_ACTIVE_DEVICE" ||
+                      classified.code === "RATE_LIMITED" ||
+                      classified.code === "VALIDATION_ERROR" ||
+                      classified.code === "EXECUTION_FAILED"
+                    ? "SPOTIFY_REJECTED"
+                    : classified.code,
+              reconnectRequired: classified.reconnectRequired,
+              extra: {
+                httpStatus: classified.httpStatus,
+                spotifyErrorMessage: classified.spotifyErrorMessage,
+              },
+            });
+          }
+          throw err;
         }
-        await adapter.removePlaylistItems(pref.provider_id, uris);
-        return {
-          success: true,
-          data: { removed: uris.length },
-          message: `Removed ${uris.length} track(s) from ${pref.label}.`,
-          activityLabel: `Removing ${uris.length} tracks`,
-        };
       }
 
       case "reorder_playlist_items": {
@@ -2296,4 +2558,10 @@ export async function runSpotifyTool(opts: {
   }
 }
 
-export { SPOTIFY_SCOPES, isSpotifyConfigured, needsSpotifyScopeUpgrade };
+export {
+  SPOTIFY_SCOPES,
+  isSpotifyConfigured,
+  needsSpotifyScopeUpgrade,
+  needsPlaylistEditReconnect,
+  hasPlaylistWriteScopes,
+};

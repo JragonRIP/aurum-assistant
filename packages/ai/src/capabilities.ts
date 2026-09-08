@@ -100,8 +100,13 @@ export function buildCapabilitySummary(flags: CapabilitySessionFlags): string {
         );
       }
       if (flags.spotifyMissingScopes && flags.spotifyMissingScopes.length > 0) {
+        const playlistWriteMissing = flags.spotifyMissingScopes.some((s) =>
+          s.startsWith("playlist-modify"),
+        );
         lines.push(
-          `- Spotify missing scopes (reconnect required for full access): ${flags.spotifyMissingScopes.join(", ")}.`,
+          playlistWriteMissing
+            ? "- Spotify playlist editing requires a reconnect in Settings. If a playlist tool returns MISSING_SCOPE, ask the user to reconnect — do not keep retrying the write."
+            : `- Spotify missing scopes (reconnect required for full access): ${flags.spotifyMissingScopes.join(", ")}.`,
         );
       }
     }

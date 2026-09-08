@@ -218,6 +218,100 @@ describe("StreamingTtsController", () => {
     );
   });
 
+  it("applies sir on the first short sentence only", async () => {
+    const calls: Array<{ text: string; skipAddress?: boolean }> = [];
+    const playback = {
+      beginTurn() {},
+      stop() {},
+      enqueueBase64() {},
+    } as unknown as StreamingPlaybackSink;
+    const ctl = new StreamingTtsController({
+      playback,
+      synthesize: async (opts) => {
+        calls.push({ text: opts.text, skipAddress: opts.skipAddress });
+        return {
+          ok: true,
+          audioBase64: "QQ==",
+          mimeType: "audio/wav",
+          provider: "kokoro",
+        };
+      },
+    });
+    ctl.beginTurn();
+    ctl.onDelta(
+      "Your first meeting is at nine. Then you have lunch at noon. Your final meeting is at four.",
+    );
+    ctl.onAgentComplete();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0]?.skipAddress, false);
+    assert.equal(calls[1]?.skipAddress, true);
+    assert.equal(calls[2]?.skipAddress, true);
+    assert.equal(ctl.addressWasUsed(), true);
+  });
+
+  it("resets sir state on a new turn and after barge-in", async () => {
+    const playback = {
+      beginTurn() {},
+      stop() {},
+      enqueueBase64() {},
+    } as unknown as StreamingPlaybackSink;
+    const ctl = new StreamingTtsController({
+      playback,
+      synthesize: async () => ({
+        ok: true,
+        audioBase64: "QQ==",
+        mimeType: "audio/wav",
+        provider: "kokoro",
+      }),
+    });
+    ctl.beginTurn();
+    ctl.onDelta("It's 10:34 PM.");
+    ctl.onAgentComplete();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(ctl.addressWasUsed(), true);
+    ctl.cancel();
+    assert.equal(ctl.addressWasUsed(), false);
+    ctl.beginTurn();
+    assert.equal(ctl.addressWasUsed(), false);
+  });
+
+  it("enqueues one acknowledgement without waiting for synth", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => {
+      finish = r;
+    });
+    const purposes: string[] = [];
+    const playback = {
+      beginTurn() {},
+      stop() {},
+      enqueueBase64() {},
+    } as unknown as StreamingPlaybackSink;
+    const ctl = new StreamingTtsController({
+      playback,
+      synthesize: async (opts) => {
+        purposes.push(opts.purpose);
+        await gate;
+        return {
+          ok: true,
+          audioBase64: "QQ==",
+          mimeType: "audio/wav",
+          provider: "kokoro",
+        };
+      },
+    });
+    ctl.beginTurn();
+    const t0 = Date.now();
+    const enqueued = ctl.enqueueAcknowledgement("Opening it.");
+    assert.equal(enqueued, true);
+    assert.ok(Date.now() - t0 < 20);
+    assert.equal(ctl.enqueueAcknowledgement("Working on that."), false);
+    finish();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(purposes[0], "ptt_ack");
+    assert.equal(ctl.addressWasUsed(), true);
+  });
+
   it("flushes trailing fragment after stream ends", async () => {
     const texts: string[] = [];
     const playback = {
@@ -264,5 +358,8 @@ describe("VoicePlayback queue contracts", () => {
     assert.match(src, /onAgentComplete/);
     assert.match(src, /cancelStreamingSpeech/);
     assert.match(src, /bypassSpokenMode/);
+    assert.match(src, /maybeSpeakPreActionAck/);
+    assert.match(src, /enqueueAcknowledgement/);
+    assert.match(src, /classifySpokenAck/);
   });
 });

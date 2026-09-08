@@ -15,11 +15,12 @@ describe("buildSpeechResponse", () => {
     assert.ok(out.length <= 130);
   });
   it("keeps short personality-bearing confirmations intact", () => {
-    assert.equal(buildSpeechResponse("Done."), "Done.");
+    assert.equal(buildSpeechResponse("Done.", { skipAddress: true }), "Done.");
     assert.equal(
-      buildSpeechResponse("Yes. Production is healthy."),
+      buildSpeechResponse("Yes. Production is healthy.", { skipAddress: true }),
       "Yes. Production is healthy.",
     );
+    assert.equal(buildSpeechResponse("Done."), "Done, sir.");
   });
   it("strips markdown and does not read URLs", () => {
     const out = buildSpeechResponse(

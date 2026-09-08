@@ -282,6 +282,8 @@ describe("resource type isolation", () => {
     assert.equal(isClarificationErrorCode("NO_ACTIVE_DEVICE"), false);
     assert.equal(isSoftToolErrorCode("PLAYBACK_CHANGE_NOT_CONFIRMED"), true);
     assert.equal(isSoftToolErrorCode("RATE_LIMITED"), true);
+    assert.equal(isSoftToolErrorCode("MISSING_SCOPE"), true);
+    assert.equal(isSoftToolErrorCode("PLAYLIST_NOT_WRITABLE"), true);
     assert.equal(isSoftToolErrorCode("EXECUTION_FAILED"), false);
   });
 });
